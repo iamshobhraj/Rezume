@@ -1,0 +1,29 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+backend/.venv/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# SQLite
+backend/data/*.db
+backend/data/*.db-journal
+
+# Generated PDFs
+backend/data/pdfs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

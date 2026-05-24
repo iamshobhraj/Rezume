@@ -1,0 +1,83 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=0.6in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+
+% Formatting
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\titleformat{\section}{\large\bfseries\uppercase}{}{0em}{}[\titlerule]
+\titlespacing{\section}{0pt}{1em}{0.5em}
+
+\begin{document}
+
+% Header
+\begin{center}
+  {\LARGE\bfseries \VAR{escape(resume.get('name', 'Candidate Name'))}}\\[0.3em]
+  \BLOCK{if resume.get('contact')}
+    \VAR{escape(resume.contact.get('email', ''))}
+    \BLOCK{if resume.contact.get('phone')} $\mid$ \VAR{escape(resume.contact.phone)}\BLOCK{endif}
+    \BLOCK{if resume.contact.get('linkedin')} $\mid$ \VAR{escape(resume.contact.linkedin)}\BLOCK{endif}
+    \BLOCK{if resume.contact.get('location')} $\mid$ \VAR{escape(resume.contact.location)}\BLOCK{endif}
+  \BLOCK{endif}
+\end{center}
+
+% Summary
+\BLOCK{if resume.get('summary')}
+\section{Professional Summary}
+\VAR{escape(resume.summary)}
+\BLOCK{endif}
+
+% Experience
+\BLOCK{if resume.get('experience')}
+\section{Experience}
+\BLOCK{for exp in resume.experience}
+\textbf{\VAR{escape(exp.get('title', ''))}} \hfill \VAR{escape(exp.get('date_range', ''))}\\
+\textit{\VAR{escape(exp.get('company', ''))}}
+\begin{itemize}[leftmargin=*, nosep, topsep=2pt]
+  \BLOCK{for bullet in exp.get('bullets', [])}
+  \item \VAR{escape(bullet)}
+  \BLOCK{endfor}
+\end{itemize}
+\vspace{0.3em}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+% Projects
+\BLOCK{if resume.get('projects')}
+\section{Projects}
+\BLOCK{for proj in resume.projects}
+\textbf{\VAR{escape(proj.get('title', ''))}} \hfill \VAR{escape(proj.get('date_range', ''))}\\
+\BLOCK{if proj.get('technologies')}
+\textit{Technologies: \VAR{escape(proj.get('technologies', ''))}}
+\BLOCK{endif}
+\begin{itemize}[leftmargin=*, nosep, topsep=2pt]
+  \BLOCK{for bullet in proj.get('bullets', [])}
+  \item \VAR{escape(bullet)}
+  \BLOCK{endfor}
+\end{itemize}
+\vspace{0.3em}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+% Skills
+\BLOCK{if resume.get('skills')}
+\section{Technical Skills}
+\BLOCK{for category, skill_list in resume.skills.items()}
+\BLOCK{if skill_list}
+\textbf{\VAR{escape(category.replace('_', ' ').title())}:} \VAR{escape(', '.join(skill_list))}\\
+\BLOCK{endif}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+% Education
+\BLOCK{if resume.get('education')}
+\section{Education}
+\BLOCK{for edu in resume.education}
+\textbf{\VAR{escape(edu.get('degree', ''))}} -- \VAR{escape(edu.get('institution', ''))} \hfill \VAR{escape(edu.get('year', ''))}\\
+\BLOCK{endfor}
+\BLOCK{endif}
+
+\end{document}
