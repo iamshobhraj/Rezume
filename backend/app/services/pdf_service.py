@@ -33,14 +33,13 @@ def _escape_latex(text: str) -> str:
     """Escape special LaTeX characters in text."""
     if not text:
         return ""
+    # NOTE: intentionally NOT escaping _ { } because
+    # Gemma output may contain \textbf{} \href{} \_ etc.
     special_chars = {
         "&": r"\&",
         "%": r"\%",
         "$": r"\$",
         "#": r"\#",
-        "_": r"\_",
-        "{": r"\{",
-        "}": r"\}",
         "~": r"\textasciitilde{}",
         "^": r"\textasciicircum{}",
     }
@@ -49,7 +48,7 @@ def _escape_latex(text: str) -> str:
     return text
 
 
-def render_resume_to_latex(resume_data: dict) -> str:
+def render_resume_to_latex(resume_data: dict, profile=None) -> str:
     """Render a resume data dict to a LaTeX string using the Jinja2 template.
 
     Args:
@@ -60,7 +59,21 @@ def render_resume_to_latex(resume_data: dict) -> str:
     """
     try:
         template = jinja_env.get_template("resume.tex.j2")
-        return template.render(resume=resume_data, escape=_escape_latex)
+        profile_dict = {}
+        if profile:
+            profile_dict = {
+                "name": profile.name or "",
+                "email": profile.email or "",
+                "phone": profile.phone or "",
+                "github": profile.github or "",
+                "linkedin": profile.linkedin or "",
+                "location": profile.location or "",
+                "portfolio": getattr(profile, "portfolio", "") or "",
+                "college": profile.college or "",
+                "college_years": f"{getattr(profile, 'college_start_year', '') or ''} \u2013 {profile.graduation_year or ''}".strip(" \u2013"),
+                "degree": profile.degree or "",
+            }
+        return template.render(resume=resume_data, profile=profile_dict, escape=_escape_latex)
     except Exception as e:
         logger.error(f"Failed to render LaTeX template: {e}")
         # Fallback: return a minimal LaTeX document
