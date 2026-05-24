@@ -15,6 +15,9 @@ frontend/dist/
 backend/data/*.db
 backend/data/*.db-journal
 
+# Qdrant local
+backend/local_qdrant/
+
 # Generated PDFs
 backend/data/pdfs/
 
