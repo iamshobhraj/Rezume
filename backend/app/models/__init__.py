@@ -6,6 +6,7 @@ from app.models.resume_config import ResumeConfig
 from app.models.generated_resume import GeneratedResume
 from app.models.github_user import GithubUser
 from app.models.resume_history import ResumeHistory
+from app.models.user_profile import UserProfile
 
 __all__ = [
     "LLMProvider",
@@ -15,4 +16,5 @@ __all__ = [
     "GeneratedResume",
     "GithubUser",
     "ResumeHistory",
+    "UserProfile",
 ]

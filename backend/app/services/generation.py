@@ -18,14 +18,32 @@ logger = logging.getLogger(__name__)
 RESUME_GENERATION_PROMPT = """You are an expert resume writer specializing in ATS-optimized resumes for engineering roles.
 
 ## Instructions
-Generate a tailored resume based on the candidate's work experience and the target job description.
+Generate a tailored resume based on the candidate's work experience, target job description, and personal info.
 The resume must be ATS-safe: use standard section headings, avoid tables/columns in text, include relevant keywords from the JD.
+
+## STRICT ONE-PAGE CONSTRAINT:
+The resume must fit on exactly ONE page. You must adhere strictly to these constraints:
+- Maximum 3 bullets per project.
+- Maximum 4 bullets for experience.
+- Summary: maximum 2 sentences.
+- Skills: single line per category.
+- If content would overflow, cut lower-priority projects entirely.
+
+## Open Source Instructions:
+For open_source entries:
+- org_display: use the ORGANIZATION name, not repo names (e.g., "Learning Equality (Kolibri Ecosystem)", not ".github / kolibri-design-system")
+- org_github: link to the org, not individual repos
+- Pick the 2 most impressive contributions as bullets
+- If there is a release acknowledgment, ALWAYS include it
 
 ## Candidate Configuration
 - Target Role: {target_role}
 - Years of Experience: {years_experience}
 - Skills Emphasis: {skills_emphasis}
 - Tone: {tone}
+
+## Candidate Personal & Education Info
+{personal_info}
 
 ## Job Description
 {job_description}
@@ -36,12 +54,13 @@ The resume must be ATS-safe: use standard section headings, avoid tables/columns
 ## Output Format
 Respond with a JSON object containing:
 {{
-  "name": "Candidate Name (placeholder)",
+  "name": "{candidate_name}",
   "contact": {{
-    "email": "email@example.com",
-    "phone": "(555) 000-0000",
-    "linkedin": "linkedin.com/in/candidate",
-    "location": "City, State"
+    "email": "{candidate_email}",
+    "phone": "{candidate_phone}",
+    "linkedin": "{candidate_linkedin}",
+    "location": "{candidate_location}",
+    "github": "{candidate_github}"
   }},
   "summary": "2-3 sentence professional summary tailored to the JD",
   "experience": [
@@ -54,10 +73,19 @@ Respond with a JSON object containing:
   ],
   "projects": [
     {{
-      "title": "Project Name (OSS or Personal)",
+      "title": "Project Name (Personal / Work)",
       "technologies": "Tech stack used",
       "date_range": "Date or Year",
       "bullets": ["Key technical achievements..."]
+    }}
+  ],
+  "open_source": [
+    {{
+      "org_display": "Organization Name (Ecosystem Name)",
+      "org_github": "github.com/organization",
+      "duration": "Start - End",
+      "repos": ["repo1", "repo2"],
+      "contributions": ["Key open source contributions..."]
     }}
   ],
   "skills": {{
@@ -68,9 +96,10 @@ Respond with a JSON object containing:
   }},
   "education": [
     {{
-      "degree": "Degree Name",
-      "institution": "University",
-      "year": "Year"
+      "degree": "{candidate_degree}",
+      "institution": "{candidate_college}",
+      "year": "{candidate_graduation_year}",
+      "coursework": "{candidate_coursework}"
     }}
   ],
   "ats_score": 85,
@@ -166,6 +195,36 @@ class ResumeGenerationService:
         skills_emphasis = ", ".join(config_data.get("skills_emphasis", []))
         tone = config_data.get("tone", "professional")
 
+        # Query UserProfile for injection and formatting
+        from app.models.user_profile import UserProfile
+        profile = self.db.query(UserProfile).first()
+        if not profile:
+            profile = UserProfile(
+                name="Candidate Name",
+                email="email@example.com",
+                phone="",
+                github="",
+                linkedin="",
+                location="",
+                college="",
+                degree="",
+                graduation_year="",
+                coursework="",
+            )
+
+        personal_info_str = (
+            f"Candidate Name: {profile.name}\n"
+            f"Email: {profile.email}\n"
+            f"Phone: {profile.phone or 'N/A'}\n"
+            f"GitHub: {profile.github or 'N/A'}\n"
+            f"LinkedIn: {profile.linkedin or 'N/A'}\n"
+            f"Location: {profile.location or 'N/A'}\n"
+            f"College/University: {profile.college or 'N/A'}\n"
+            f"Degree: {profile.degree or 'N/A'}\n"
+            f"Graduation Year: {profile.graduation_year or 'N/A'}\n"
+            f"Relevant Coursework: {profile.coursework or 'N/A'}"
+        )
+
         # 4. Build prompt
         prompt = RESUME_GENERATION_PROMPT.format(
             target_role=target_role,
@@ -174,6 +233,17 @@ class ResumeGenerationService:
             tone=tone,
             job_description=job_description,
             retrieved_context=retrieved_context,
+            personal_info=personal_info_str,
+            candidate_name=profile.name,
+            candidate_email=profile.email,
+            candidate_phone=profile.phone or "",
+            candidate_linkedin=profile.linkedin or "",
+            candidate_location=profile.location or "",
+            candidate_github=profile.github or "",
+            candidate_degree=profile.degree or "",
+            candidate_college=profile.college or "",
+            candidate_graduation_year=profile.graduation_year or "",
+            candidate_coursework=profile.coursework or "",
         )
 
         # 5. Generate resume via LLM
@@ -197,6 +267,34 @@ class ResumeGenerationService:
         except json.JSONDecodeError:
             logger.error("Failed to parse LLM response as JSON")
             resume_data = {"error": "Failed to parse LLM response", "raw": cleaned}
+
+        if isinstance(resume_data, dict) and "error" not in resume_data:
+            # Overwrite names and contacts with actual verified details to avoid placeholder output
+            resume_data["name"] = profile.name
+            resume_data["contact"] = {
+                "email": profile.email,
+                "phone": profile.phone or "",
+                "github": profile.github or "",
+                "linkedin": profile.linkedin or "",
+                "location": profile.location or "",
+            }
+            # Standalone values for ease of rendering in jinja LaTeX template
+            resume_data["email"] = profile.email
+            resume_data["phone"] = profile.phone or ""
+            resume_data["github"] = profile.github or ""
+            resume_data["linkedin"] = profile.linkedin or ""
+            resume_data["location"] = profile.location or ""
+
+            # Education section injection
+            if profile.college or profile.degree:
+                resume_data["education"] = [
+                    {
+                        "institution": profile.college or "",
+                        "degree": profile.degree or "",
+                        "year": profile.graduation_year or "",
+                        "coursework": profile.coursework or "",
+                    }
+                ]
 
         # 6. Render PDF
         latex_content = None

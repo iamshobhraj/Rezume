@@ -84,6 +84,30 @@ def _seed_default_config(db) -> None:
     logger.info("Seeded default resume configuration")
 
 
+def _seed_default_profile(db) -> None:
+    """Seed the default user profile if it doesn't exist."""
+    from app.models.user_profile import UserProfile
+    existing = db.query(UserProfile).first()
+    if existing is not None:
+        return
+
+    profile = UserProfile(
+        id=1,
+        name="Candidate Name",
+        email="email@example.com",
+        phone="(555) 000-0000",
+        github="github.com/candidate",
+        linkedin="linkedin.com/in/candidate",
+        location="City, State",
+        college="University Name",
+        degree="B.S. in Computer Science",
+        graduation_year="2025",
+        coursework="Data Structures, Algorithms, Software Engineering",
+    )
+    db.add(profile)
+    logger.info("Seeded default user profile")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler – runs on startup and shutdown."""
@@ -99,6 +123,7 @@ async def lifespan(app: FastAPI):
     try:
         _seed_default_provider(db)
         _seed_default_config(db)
+        _seed_default_profile(db)
         db.commit()
     finally:
         db.close()
@@ -131,7 +156,7 @@ app.add_middleware(
 )
 
 # Mount all routers under /api prefix
-from app.routers import health, providers, projects, resumes, config, github, history  # noqa: E402
+from app.routers import health, providers, projects, resumes, config, github, history, profile  # noqa: E402
 
 app.include_router(health.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
@@ -140,4 +165,5 @@ app.include_router(resumes.router, prefix="/api")
 app.include_router(config.router, prefix="/api")
 app.include_router(github.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
+app.include_router(profile.router, prefix="/api")
 

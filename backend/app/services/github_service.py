@@ -4,6 +4,7 @@ import logging
 import uuid
 import httpx
 from datetime import datetime
+import json
 
 from sqlalchemy.orm import Session
 
@@ -50,44 +51,82 @@ class GithubService:
             data = response.json()
             items = data.get("items", [])
             
-            created_count = 0
+            # Group items by organization to build the requested OSS data model
+            orgs = {}
             for item in items:
-                pr_url = item.get("html_url")
-                
-                # Check if this PR already exists based on github_url
-                existing = db.query(Project).filter(Project.github_url == pr_url).first()
-                if existing:
-                    continue
-                
-                title = item.get("title", "OSS Contribution")
                 repo_url = item.get("repository_url", "")
-                repo_name = repo_url.split("/")[-1] if repo_url else "Open Source"
-                body = item.get("body", "")
+                parts = repo_url.split("/")
+                repo_name = parts[-1] if len(parts) > 0 else "Unknown"
+                org_name = parts[-2] if len(parts) > 1 else "Unknown"
                 
-                # Fetch diff or files if we want a richer snapshot
-                # For now, using the PR body and title as the raw text
-                raw_text = f"Repository: {repo_name}\nPull Request: {title}\nURL: {pr_url}\n\nDescription:\n{body}"
+                if org_name not in orgs:
+                    orgs[org_name] = {
+                        "org": org_name,
+                        "ecosystem": f"{org_name.capitalize()} Ecosystem",
+                        "org_github": f"github.com/{org_name}",
+                        "repos": set(),
+                        "prs": [],
+                        "start_date": item.get("created_at", ""),
+                        "end_date": item.get("closed_at", "")
+                    }
+                orgs[org_name]["repos"].add(repo_name)
                 
-                project = Project(
-                    id=str(uuid.uuid4()),
-                    title=f"PR: {title}",
-                    company=repo_name,
-                    role="Open Source Contributor",
-                    date_range=item.get("closed_at", "").split("T")[0],
-                    raw_text=raw_text,
-                    project_type="oss",
-                    priority=4,  # Give OSS a slightly higher default priority
-                    github_url=pr_url,
-                )
-                db.add(project)
-                db.flush()
+                title = item.get("title", "")
+                html_url = item.get("html_url", "")
+                orgs[org_name]["prs"].append(f"{title} ({html_url})")
                 
-                # Ingest it
-                try:
-                    ingestion_service.ingest_project(project.id)
-                    created_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to ingest OSS project {project.id}: {e}")
+                created_at = item.get("created_at", "")
+                closed_at = item.get("closed_at", "")
+                if created_at and created_at < orgs[org_name]["start_date"]:
+                    orgs[org_name]["start_date"] = created_at
+                if closed_at and closed_at > orgs[org_name]["end_date"]:
+                    orgs[org_name]["end_date"] = closed_at
+
+            created_count = 0
+            for org_name, org_data in orgs.items():
+                start_year = org_data["start_date"][:4] if org_data["start_date"] else ""
+                end_year = org_data["end_date"][:4] if org_data["end_date"] else "Present"
+                duration = f"{start_year} - {end_year}" if start_year != end_year else start_year
+                
+                oss_profile_entry = {
+                    "org": org_data["org"],
+                    "ecosystem": org_data["ecosystem"],
+                    "org_github": org_data["org_github"],
+                    "duration": duration,
+                    "repos": list(org_data["repos"]),
+                    "contributions": org_data["prs"]
+                }
+                
+                project_id = f"oss-{org_name}"
+                existing = db.query(Project).filter(Project.id == project_id).first()
+                if not existing:
+                    project = Project(
+                        id=project_id,
+                        title=f"{org_name.capitalize()} OSS Contributions",
+                        company=org_name,
+                        role="Open Source Contributor",
+                        date_range=duration,
+                        raw_text=json.dumps(oss_profile_entry, indent=2),
+                        project_type="oss",
+                        priority=4,
+                        github_url=f"https://{org_data['org_github']}"
+                    )
+                    db.add(project)
+                    db.flush()
+                    try:
+                        ingestion_service.ingest_project(project.id)
+                        created_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to ingest OSS project {project_id}: {e}")
+                else:
+                    existing.raw_text = json.dumps(oss_profile_entry, indent=2)
+                    existing.date_range = duration
+                    db.flush()
+                    # Re-ingest the updated project
+                    try:
+                        ingestion_service.ingest_project(project_id)
+                    except Exception as e:
+                        logger.error(f"Failed to re-ingest OSS project {project_id}: {e}")
             
             github_user.last_fetch_stamp = datetime.utcnow()
             db.commit()

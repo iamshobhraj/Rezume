@@ -1,83 +1,130 @@
-\documentclass[11pt,a4paper]{article}
-\usepackage[margin=0.6in]{geometry}
-\usepackage{enumitem}
-\usepackage{titlesec}
+\documentclass[a4paper,10pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[left=0.75in, right=0.75in, top=0.4in, bottom=0.5in]{geometry}
+\usepackage{enumitem,titlesec,xcolor}
 \usepackage[hidelinks]{hyperref}
-\usepackage{xcolor}
+\usepackage{mathtools}
+\usepackage{amsmath}
 
-% Formatting
-\pagestyle{empty}
+\renewcommand{\baselinestretch}{1.08}
 \setlength{\parindent}{0pt}
-\titleformat{\section}{\large\bfseries\uppercase}{}{0em}{}[\titlerule]
-\titlespacing{\section}{0pt}{1em}{0.5em}
+\setlength{\parskip}{3pt}
+\setlist[itemize]{nosep, leftmargin=1.2em}
 
+\definecolor{darkblue}{RGB}{0,0,139}
+
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\titlespacing*{\section}{0pt}{6pt}{8pt}
+
+%- Jinja2 delimiters are BLOCK/VAR/COMMENT to avoid LaTeX conflicts
 \begin{document}
 
-% Header
+%--- HEADER ---
 \begin{center}
-  {\LARGE\bfseries \VAR{escape(resume.get('name', 'Candidate Name'))}}\\[0.3em]
-  \BLOCK{if resume.get('contact')}
-    \VAR{escape(resume.contact.get('email', ''))}
-    \BLOCK{if resume.contact.get('phone')} $\mid$ \VAR{escape(resume.contact.phone)}\BLOCK{endif}
-    \BLOCK{if resume.contact.get('linkedin')} $\mid$ \VAR{escape(resume.contact.linkedin)}\BLOCK{endif}
-    \BLOCK{if resume.contact.get('location')} $\mid$ \VAR{escape(resume.contact.location)}\BLOCK{endif}
-  \BLOCK{endif}
+    {\LARGE \textbf{\VAR{escape(profile.name)}}}\par
+    \small
+    \href{mailto:\VAR{profile.email}}{\textcolor{darkblue}{\VAR{escape(profile.email)}}}
+    \,|\, \VAR{escape(profile.phone)}
+    \BLOCK{if profile.get('portfolio')}
+    \,|\, \href{https://\VAR{profile.portfolio}}{\textcolor{darkblue}{\VAR{escape(profile.portfolio)}}}
+    \BLOCK{endif}
+    \,|\, \href{https://\VAR{profile.github}}{\textcolor{darkblue}{\VAR{escape(profile.github)}}}
 \end{center}
 
-% Summary
-\BLOCK{if resume.get('summary')}
-\section{Professional Summary}
-\VAR{escape(resume.summary)}
+%--- EDUCATION ---
+\section*{Education}
+\textbf{\VAR{escape(profile.college)}} \hfill \VAR{escape(profile.college_years)}\\
+\VAR{escape(profile.degree)}
+
+%--- TECHNICAL SKILLS ---
+\BLOCK{if resume.get('skills')}
+\section*{Technical Skills}
+\BLOCK{if resume.skills.get('languages')}
+\textbf{Languages:} \VAR{escape(', '.join(resume.skills.languages))}\\
+\BLOCK{endif}
+\BLOCK{if resume.skills.get('backend')}
+\textbf{Backend:} \VAR{escape(', '.join(resume.skills.backend))}\\
+\BLOCK{endif}
+\BLOCK{if resume.skills.get('databases')}
+\textbf{Databases:} \VAR{escape(', '.join(resume.skills.databases))}\\
+\BLOCK{endif}
+\BLOCK{if resume.skills.get('infra')}
+\textbf{Infra:} \VAR{escape(', '.join(resume.skills.infra))}\\
+\BLOCK{endif}
+\BLOCK{if resume.skills.get('concepts')}
+\textbf{Concepts:} \VAR{escape(', '.join(resume.skills.concepts))}\\
+\BLOCK{endif}
+\BLOCK{if resume.skills.get('tools')}
+\textbf{Tools:} \VAR{escape(', '.join(resume.skills.tools))}\\
+\BLOCK{endif}
 \BLOCK{endif}
 
-% Experience
+%--- EXPERIENCE ---
 \BLOCK{if resume.get('experience')}
-\section{Experience}
-\BLOCK{for exp in resume.experience}
-\textbf{\VAR{escape(exp.get('title', ''))}} \hfill \VAR{escape(exp.get('date_range', ''))}\\
-\textit{\VAR{escape(exp.get('company', ''))}}
-\begin{itemize}[leftmargin=*, nosep, topsep=2pt]
+\section*{Experience}
+
+\BLOCK{for exp in resume.get('experience', [])}
+\textbf{\VAR{escape(exp.title)} --- \VAR{escape(exp.company)}} \hfill \textit{\VAR{escape(exp.date_range)}}\\
+\BLOCK{if exp.get('subtitle')}
+\textit{\VAR{escape(exp.subtitle)}}
+\BLOCK{endif}
+\begin{itemize}
   \BLOCK{for bullet in exp.get('bullets', [])}
   \item \VAR{escape(bullet)}
   \BLOCK{endfor}
 \end{itemize}
 \vspace{0.3em}
 \BLOCK{endfor}
+
+\BLOCK{for oss in resume.get('open_source', [])}
+\textbf{\VAR{escape(oss.get('role', 'Open Source Contributor'))} --- \VAR{escape(oss.get('org_display', oss.get('org', '')))}} \hfill \textit{\VAR{escape(oss.duration)}}\\
+\href{https://\VAR{oss.org_github}}{\textcolor{darkblue}{\VAR{escape(oss.org_github)}}}
+\begin{itemize}
+  \BLOCK{for c in oss.get('contributions', [])}
+  \item \VAR{escape(c)}
+  \BLOCK{endfor}
+\end{itemize}
+\vspace{0.3em}
+\BLOCK{endfor}
+
 \BLOCK{endif}
 
-% Projects
+%--- PROJECTS ---
 \BLOCK{if resume.get('projects')}
-\section{Projects}
+\section*{Projects}
+
 \BLOCK{for proj in resume.projects}
-\textbf{\VAR{escape(proj.get('title', ''))}} \hfill \VAR{escape(proj.get('date_range', ''))}\\
-\BLOCK{if proj.get('technologies')}
-\textit{Technologies: \VAR{escape(proj.get('technologies', ''))}}
+\textbf{\VAR{escape(proj.title)}}
+\BLOCK{if proj.get('gitlab_url') or proj.get('github_url') or proj.get('live_url')}
+\hfill
+\BLOCK{if proj.get('gitlab_url')}
+\href{\VAR{proj.gitlab_url}}{\textcolor{darkblue}{GitLab}}
 \BLOCK{endif}
-\begin{itemize}[leftmargin=*, nosep, topsep=2pt]
+\BLOCK{if proj.get('github_url')}
+\BLOCK{if proj.get('gitlab_url')}\,|\,\BLOCK{endif}
+\href{\VAR{proj.github_url}}{\textcolor{darkblue}{GitHub}}
+\BLOCK{endif}
+\BLOCK{if proj.get('live_url')}
+\,|\, \href{\VAR{proj.live_url}}{\textcolor{darkblue}{Live}}
+\BLOCK{endif}
+\BLOCK{endif}\\
+\BLOCK{if proj.get('technologies')}
+\textit{\VAR{escape(proj.technologies)}}
+\BLOCK{endif}
+\begin{itemize}
   \BLOCK{for bullet in proj.get('bullets', [])}
   \item \VAR{escape(bullet)}
   \BLOCK{endfor}
 \end{itemize}
 \vspace{0.3em}
 \BLOCK{endfor}
+
 \BLOCK{endif}
 
-% Skills
-\BLOCK{if resume.get('skills')}
-\section{Technical Skills}
-\BLOCK{for category, skill_list in resume.skills.items()}
-\BLOCK{if skill_list}
-\textbf{\VAR{escape(category.replace('_', ' ').title())}:} \VAR{escape(', '.join(skill_list))}\\
-\BLOCK{endif}
-\BLOCK{endfor}
-\BLOCK{endif}
-
-% Education
-\BLOCK{if resume.get('education')}
-\section{Education}
-\BLOCK{for edu in resume.education}
-\textbf{\VAR{escape(edu.get('degree', ''))}} -- \VAR{escape(edu.get('institution', ''))} \hfill \VAR{escape(edu.get('year', ''))}\\
-\BLOCK{endfor}
+%--- INTERESTS ---
+\BLOCK{if resume.get('interests')}
+\section*{Interests}
+\VAR{escape(resume.interests)}
 \BLOCK{endif}
 
 \end{document}

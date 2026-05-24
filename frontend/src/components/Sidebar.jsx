@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: '◈' },
+  { to: '/profile', label: 'User Profile', icon: '👤' },
   { to: '/projects', label: 'Projects & OSS', icon: '◉' },
   { to: '/generate', label: 'Generate Resume', icon: '✦' },
   { to: '/history', label: 'Resume History', icon: '◷' },
