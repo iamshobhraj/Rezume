@@ -150,6 +150,7 @@ Rules:
 6. Bullet formula: Action verb + Technology + Impact or Scope.
 7. Do NOT output name, contact, or education — those are injected from the database separately.
 8. Respond ONLY with valid JSON. No extra text.
+9. For date_range fields: if you cannot infer a date, use an EMPTY STRING (""). NEVER write "Dates not provided", "N/A", "Unknown", or any placeholder text.
 """
 
 
@@ -300,7 +301,51 @@ class ResumeGenerationService:
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
             end = -1 if lines[-1].strip() == "```" else len(lines)
-            cleaned = "\n".join(lines[1:end]).strip()
+            cleaned = "\n".join(lines[1:-1]).strip()
+
+        # Bug-fix: json.loads interprets \t inside JSON strings as a tab character,
+        # which turns LaTeX "\textbf" into a tab + "extbf".  We scan the raw LLM
+        # response char-by-char and double any backslash that is NOT a genuine JSON
+        # escape.  The only JSON escapes we preserve are:
+        #   \"  \\  \uXXXX
+        # We intentionally do NOT preserve \t \n \b \f \r as "valid" JSON escapes
+        # because LLMs use bare \t as part of LaTeX macros (\textbf, \textit, etc.),
+        # and they never emit real \t tab escapes in resume text anyway.
+        def _escape_latex_backslashes(raw: str) -> str:
+            """Double bare backslashes in JSON string values that aren't \\, \", or \\uXXXX."""
+            result: list[str] = []
+            in_string = False
+            i = 0
+            while i < len(raw):
+                ch = raw[i]
+                if ch == '"' and (i == 0 or raw[i - 1] != '\\'):
+                    in_string = not in_string
+                    result.append(ch)
+                    i += 1
+                elif in_string and ch == '\\':
+                    next_ch = raw[i + 1] if i + 1 < len(raw) else ''
+                    if next_ch == '\\':
+                        # \\  →  already-escaped backslash: consume both, emit as-is.
+                        result.append('\\\\')
+                        i += 2
+                    elif next_ch == '"':
+                        # \"  →  escaped quote: leave it alone.
+                        result.append(ch)
+                        i += 1
+                    elif next_ch == 'u':
+                        # \uXXXX  →  unicode escape: leave it alone.
+                        result.append(ch)
+                        i += 1
+                    else:
+                        # Everything else (\t \n \b \f \r \textbf etc.): double it.
+                        result.append('\\\\')
+                        i += 1
+                else:
+                    result.append(ch)
+                    i += 1
+            return ''.join(result)
+
+        cleaned = _escape_latex_backslashes(cleaned)
 
         try:
             resume_data = json.loads(cleaned)
@@ -372,6 +417,20 @@ class ResumeGenerationService:
                 proj.setdefault("github_url", None)
                 proj.setdefault("gitlab_url", None)
                 proj.setdefault("live_url", None)
+
+            # Bug-fix: scrub placeholder date strings the LLM sometimes emits
+            _DATE_PLACEHOLDERS = {
+                "dates not provided", "n/a", "unknown", "not provided",
+                "date not provided", "dates unknown",
+            }
+            for exp in resume_data.get("experience", []):
+                dr = exp.get("date_range", "")
+                if isinstance(dr, str) and dr.strip().lower() in _DATE_PLACEHOLDERS:
+                    exp["date_range"] = ""
+            for proj in resume_data.get("projects", []):
+                dr = proj.get("date_range", "")
+                if isinstance(dr, str) and dr.strip().lower() in _DATE_PLACEHOLDERS:
+                    proj["date_range"] = ""
 
         # 8. Render PDF
         latex_content = None

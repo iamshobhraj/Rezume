@@ -39,6 +39,7 @@
 %--- TECHNICAL SKILLS ---
 \BLOCK{if resume.get('skills')}
 \section*{Technical Skills}
+{\setlength{\parskip}{0pt}
 \BLOCK{if resume.skills.get('languages')}
 \textbf{Languages:} \VAR{escape(', '.join(resume.skills.languages))}\\
 \BLOCK{endif}
@@ -57,6 +58,7 @@
 \BLOCK{if resume.skills.get('tools')}
 \textbf{Tools:} \VAR{escape(', '.join(resume.skills.tools))}\\
 \BLOCK{endif}
+}
 \BLOCK{endif}
 
 %--- EXPERIENCE ---
