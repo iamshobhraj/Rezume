@@ -1,62 +1,75 @@
 \documentclass[a4paper,10pt]{article}
 \usepackage[T1]{fontenc}
-\usepackage[left=0.75in, right=0.75in, top=0.4in, bottom=0.5in]{geometry}
+\usepackage[left=0.65in, right=0.65in, top=0.35in, bottom=0.4in]{geometry}
 \usepackage{enumitem,titlesec,xcolor}
 \usepackage[hidelinks]{hyperref}
 \usepackage{mathtools}
 \usepackage{amsmath}
+\usepackage{microtype}
 
-\renewcommand{\baselinestretch}{1.08}
+% Tighter line spacing – was 1.08, now 1.04 keeps content on one page
+\renewcommand{\baselinestretch}{1.04}
 \setlength{\parindent}{0pt}
-\setlength{\parskip}{3pt}
-\setlist[itemize]{nosep, leftmargin=1.2em}
+\setlength{\parskip}{2pt}
+\setlist[itemize]{nosep, leftmargin=1.2em, topsep=1pt}
 
 \definecolor{darkblue}{RGB}{0,0,139}
 
+% Section heading: slightly less vertical breathing room
 \titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
-\titlespacing*{\section}{0pt}{6pt}{8pt}
+\titlespacing*{\section}{0pt}{4pt}{5pt}
 
 %- Jinja2 delimiters are BLOCK/VAR/COMMENT to avoid LaTeX conflicts
 \begin{document}
 
 %--- HEADER ---
 \begin{center}
-    {\LARGE \textbf{\VAR{escape(profile.name)}}}\par
+    {\LARGE \textbf{\VAR{esc(profile.name)}}}\par
     \small
-    \href{mailto:\VAR{profile.email}}{\textcolor{darkblue}{\VAR{escape(profile.email)}}}
-    \,|\, \VAR{escape(profile.phone)}
+    \href{mailto:\VAR{profile.email}}{\textcolor{darkblue}{\VAR{esc(profile.email)}}}
+    \,|\, \VAR{esc(profile.phone)}
     \BLOCK{if profile.get('portfolio')}
-    \,|\, \href{https://\VAR{profile.portfolio}}{\textcolor{darkblue}{\VAR{escape(profile.portfolio)}}}
+    \,|\, \href{https://\VAR{profile.portfolio}}{\textcolor{darkblue}{\VAR{esc(profile.portfolio)}}}
     \BLOCK{endif}
-    \,|\, \href{https://\VAR{profile.github}}{\textcolor{darkblue}{\VAR{escape(profile.github)}}}
+    \,|\, \href{https://\VAR{profile.github}}{\textcolor{darkblue}{\VAR{esc(profile.github)}}}
+    \BLOCK{if profile.get('linkedin')}
+    \,|\, \href{https://\VAR{profile.linkedin}}{\textcolor{darkblue}{\VAR{esc(profile.linkedin)}}}
+    \BLOCK{endif}
+    \BLOCK{if profile.get('location')}
+    \,|\, \VAR{esc(profile.location)}
+    \BLOCK{endif}
 \end{center}
 
 %--- EDUCATION ---
 \section*{Education}
-\textbf{\VAR{escape(profile.college)}} \hfill \VAR{escape(profile.college_years)}\\
-\VAR{escape(profile.degree)}
+\textbf{\VAR{esc(profile.college)}} \hfill \VAR{esc(profile.college_years)}\\
+\VAR{esc(profile.degree)}
+\BLOCK{if profile.get('coursework')}
+\\
+\textit{Coursework: \VAR{esc(profile.coursework)}}
+\BLOCK{endif}
 
 %--- TECHNICAL SKILLS ---
 \BLOCK{if resume.get('skills')}
 \section*{Technical Skills}
 {\setlength{\parskip}{0pt}
 \BLOCK{if resume.skills.get('languages')}
-\textbf{Languages:} \VAR{escape(', '.join(resume.skills.languages))}\\
+\textbf{Languages:} \VAR{esc(', '.join(resume.skills.languages))}\\
 \BLOCK{endif}
 \BLOCK{if resume.skills.get('backend')}
-\textbf{Backend:} \VAR{escape(', '.join(resume.skills.backend))}\\
+\textbf{Backend:} \VAR{esc(', '.join(resume.skills.backend))}\\
 \BLOCK{endif}
 \BLOCK{if resume.skills.get('databases')}
-\textbf{Databases:} \VAR{escape(', '.join(resume.skills.databases))}\\
+\textbf{Databases:} \VAR{esc(', '.join(resume.skills.databases))}\\
 \BLOCK{endif}
 \BLOCK{if resume.skills.get('infra')}
-\textbf{Infra:} \VAR{escape(', '.join(resume.skills.infra))}\\
+\textbf{Infra:} \VAR{esc(', '.join(resume.skills.infra))}\\
 \BLOCK{endif}
 \BLOCK{if resume.skills.get('concepts')}
-\textbf{Concepts:} \VAR{escape(', '.join(resume.skills.concepts))}\\
+\textbf{Concepts:} \VAR{esc(', '.join(resume.skills.concepts))}\\
 \BLOCK{endif}
 \BLOCK{if resume.skills.get('tools')}
-\textbf{Tools:} \VAR{escape(', '.join(resume.skills.tools))}\\
+\textbf{Tools:} \VAR{esc(', '.join(resume.skills.tools))}
 \BLOCK{endif}
 }
 \BLOCK{endif}
@@ -66,27 +79,29 @@
 \section*{Experience}
 
 \BLOCK{for exp in resume.get('experience', [])}
-\textbf{\VAR{escape(exp.title)} --- \VAR{escape(exp.company)}} \hfill \textit{\VAR{escape(exp.date_range)}}\\
+\textbf{\VAR{esc(exp.title)} --- \VAR{esc(exp.company)}} \hfill \textit{\VAR{esc(exp.date_range)}}\\
 \BLOCK{if exp.get('subtitle')}
-\textit{\VAR{escape(exp.subtitle)}}
+\textit{\VAR{esc(exp.subtitle)}}
 \BLOCK{endif}
 \begin{itemize}
   \BLOCK{for bullet in exp.get('bullets', [])}
-  \item \VAR{escape(bullet)}
+  \item \VAR{esc_bullet(bullet)}
   \BLOCK{endfor}
 \end{itemize}
-\vspace{0.3em}
+\vspace{0.1em}
 \BLOCK{endfor}
 
 \BLOCK{for oss in resume.get('open_source', [])}
-\textbf{\VAR{escape(oss.get('role', 'Open Source Contributor'))} --- \VAR{escape(oss.get('org_display', oss.get('org', '')))}} \hfill \textit{\VAR{escape(oss.duration)}}\\
-\href{https://\VAR{oss.org_github}}{\textcolor{darkblue}{\VAR{escape(oss.org_github)}}}
+\textbf{\VAR{esc(oss.get('role', 'Open Source Contributor'))} --- \VAR{esc(oss.get('org_display', oss.get('org', '')))}} \hfill \textit{\VAR{esc(oss.duration)}}\\
+\BLOCK{if oss.get('org_github')}
+\href{https://\VAR{oss.org_github}}{\textcolor{darkblue}{\VAR{esc(oss.org_github)}}}
+\BLOCK{endif}
 \begin{itemize}
   \BLOCK{for c in oss.get('contributions', [])}
-  \item \VAR{escape(c)}
+  \item \VAR{esc_bullet(c)}
   \BLOCK{endfor}
 \end{itemize}
-\vspace{0.3em}
+\vspace{0.1em}
 \BLOCK{endfor}
 
 \BLOCK{endif}
@@ -96,7 +111,7 @@
 \section*{Projects}
 
 \BLOCK{for proj in resume.projects}
-\textbf{\VAR{escape(proj.title)}}
+\textbf{\VAR{esc(proj.title)}}
 \BLOCK{if proj.get('gitlab_url') or proj.get('github_url') or proj.get('live_url')}
 \hfill
 \BLOCK{if proj.get('gitlab_url')}
@@ -111,22 +126,22 @@
 \BLOCK{endif}
 \BLOCK{endif}\\
 \BLOCK{if proj.get('technologies')}
-\textit{\VAR{escape(proj.technologies)}}
+\textit{\VAR{esc(proj.technologies)}}
 \BLOCK{endif}
 \begin{itemize}
   \BLOCK{for bullet in proj.get('bullets', [])}
-  \item \VAR{escape(bullet)}
+  \item \VAR{esc_bullet(bullet)}
   \BLOCK{endfor}
 \end{itemize}
-\vspace{0.3em}
+\vspace{0.1em}
 \BLOCK{endfor}
 
 \BLOCK{endif}
 
-%--- INTERESTS ---
+%--- INTERESTS (inline, no section break — saves vertical space) ---
 \BLOCK{if resume.get('interests')}
-\section*{Interests}
-\VAR{escape(resume.interests)}
+\vspace{0.2em}
+\noindent\textbf{Interests:} \VAR{esc(resume.interests)}
 \BLOCK{endif}
 
 \end{document}

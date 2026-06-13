@@ -9,8 +9,10 @@ export default function Profile() {
     phone: '',
     github: '',
     linkedin: '',
+    portfolio: '',
     location: '',
     college: '',
+    college_start_year: '',
     degree: '',
     graduation_year: '',
     coursework: '',
@@ -152,6 +154,18 @@ export default function Profile() {
                   placeholder="e.g., linkedin.com/in/johndoe"
                 />
               </div>
+
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="form-label" style={{ display: 'block', marginBottom: '0.375rem', fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                  Portfolio Website
+                </label>
+                <input
+                  className="input-field"
+                  value={profile.portfolio}
+                  onChange={(e) => setProfile({ ...profile, portfolio: e.target.value })}
+                  placeholder="e.g., johndoe.dev"
+                />
+              </div>
             </div>
           </div>
 
@@ -162,7 +176,7 @@ export default function Profile() {
             </h3>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '1rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '1rem' }}>
                 <div>
                   <label className="form-label" style={{ display: 'block', marginBottom: '0.375rem', fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
                     University / College
@@ -172,6 +186,18 @@ export default function Profile() {
                     value={profile.college}
                     onChange={(e) => setProfile({ ...profile, college: e.target.value })}
                     placeholder="e.g., Stanford University"
+                  />
+                </div>
+
+                <div>
+                  <label className="form-label" style={{ display: 'block', marginBottom: '0.375rem', fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                    Start Year
+                  </label>
+                  <input
+                    className="input-field"
+                    value={profile.college_start_year}
+                    onChange={(e) => setProfile({ ...profile, college_start_year: e.target.value })}
+                    placeholder="e.g., 2021"
                   />
                 </div>
 

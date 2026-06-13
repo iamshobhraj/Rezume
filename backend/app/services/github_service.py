@@ -1,4 +1,4 @@
-"""GitHub service – fetches user's merged PRs and creates OSS Projects."""
+"""GitHub service – fetches user's merged PRs and creates OSS WorkEntries."""
 
 import logging
 import uuid
@@ -9,7 +9,7 @@ import json
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.project import Project
+from app.models.work_entry import WorkEntry, EntryType
 from app.models.github_user import GithubUser
 from app.services.ingestion import ingestion_service
 from app.providers.manager import ProviderManager
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class GithubService:
-    """Fetches merged PRs from GitHub and converts them into OSS Projects."""
+    """Fetches merged PRs from GitHub and converts them into OSS WorkEntries."""
 
     def __init__(self):
         self.headers = {"Accept": "application/vnd.github.v3+json"}
@@ -26,7 +26,7 @@ class GithubService:
             self.headers["Authorization"] = f"Bearer {settings.github_token}"
 
     async def fetch_oss_contributions(self, db: Session, username: str) -> dict:
-        """Fetch merged PRs for a user and save them as OSS Projects."""
+        """Fetch merged PRs for a user and save them as OSS WorkEntries."""
         
         # Initialize/configure ingestion service
         ingestion_service.db = db
@@ -84,56 +84,57 @@ class GithubService:
 
             created_count = 0
             for org_name, org_data in orgs.items():
-                start_year = org_data["start_date"][:4] if org_data["start_date"] else ""
-                end_year = org_data["end_date"][:4] if org_data["end_date"] else "Present"
-                duration = f"{start_year} - {end_year}" if start_year != end_year else start_year
+                start_year = org_data["start_date"][:7] if org_data["start_date"] else ""  # YYYY-MM
+                end_year = org_data["end_date"][:7] if org_data["end_date"] else "present"
                 
                 oss_profile_entry = {
                     "org": org_data["org"],
                     "ecosystem": org_data["ecosystem"],
                     "org_github": org_data["org_github"],
-                    "duration": duration,
+                    "duration": f"{start_year} – {end_year}",
                     "repos": list(org_data["repos"]),
                     "contributions": org_data["prs"]
                 }
                 
-                project_id = f"oss-{org_name}"
-                existing = db.query(Project).filter(Project.id == project_id).first()
+                entry_id = f"oss-{org_name}"
+                existing = db.query(WorkEntry).filter(WorkEntry.id == entry_id).first()
                 if not existing:
-                    project = Project(
-                        id=project_id,
+                    entry = WorkEntry(
+                        id=entry_id,
                         title=f"{org_name.capitalize()} OSS Contributions",
+                        entry_type=EntryType.OSS,
                         company=org_name,
                         role="Open Source Contributor",
-                        date_range=duration,
+                        start_date=start_year,
+                        end_date=end_year,
                         raw_text=json.dumps(oss_profile_entry, indent=2),
-                        project_type="oss",
                         priority=4,
                         github_url=f"https://{org_data['org_github']}"
                     )
-                    db.add(project)
+                    db.add(entry)
                     db.flush()
                     try:
-                        ingestion_service.ingest_project(project.id)
+                        ingestion_service.ingest_project(entry.id)
                         created_count += 1
                     except Exception as e:
-                        logger.error(f"Failed to ingest OSS project {project_id}: {e}")
+                        logger.error(f"Failed to ingest OSS entry {entry_id}: {e}")
                 else:
                     existing.raw_text = json.dumps(oss_profile_entry, indent=2)
-                    existing.date_range = duration
+                    existing.start_date = start_year
+                    existing.end_date = end_year
                     db.flush()
-                    # Re-ingest the updated project
+                    # Re-ingest the updated entry
                     try:
-                        ingestion_service.ingest_project(project_id)
+                        ingestion_service.ingest_project(entry_id)
                     except Exception as e:
-                        logger.error(f"Failed to re-ingest OSS project {project_id}: {e}")
+                        logger.error(f"Failed to re-ingest OSS entry {entry_id}: {e}")
             
             github_user.last_fetch_stamp = datetime.utcnow()
             db.commit()
             
             return {
                 "success": True, 
-                "message": f"Fetched {len(items)} PRs, created {created_count} new OSS projects.",
+                "message": f"Fetched {len(items)} PRs, created {created_count} new OSS entries.",
                 "created_count": created_count
             }
 

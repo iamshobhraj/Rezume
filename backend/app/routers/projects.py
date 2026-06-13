@@ -1,4 +1,7 @@
-"""Project CRUD endpoints – manage engineering projects and OSS contributions."""
+"""WorkEntry CRUD endpoints – manage work experience, projects, and OSS contributions.
+
+API prefix remains /projects for backward compatibility with the frontend.
+"""
 
 import uuid
 
@@ -6,13 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.project import Chunk, Project
+from app.models.work_entry import Chunk, WorkEntry, EntryType
 from app.providers.manager import ProviderManager
 from app.schemas.project import (
-    ProjectCreate,
-    ProjectDetailResponse,
-    ProjectResponse,
-    ProjectUpdate,
+    WorkEntryCreate,
+    WorkEntryDetailResponse,
+    WorkEntryResponse,
+    WorkEntryUpdate,
     ChunkResponse,
     RepoDigestRequest,
 )
@@ -24,37 +27,43 @@ from gitingest import ingest_async
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-def _to_response(project: Project) -> ProjectResponse:
-    """Convert a Project ORM model to response schema."""
-    return ProjectResponse(
-        id=project.id,
-        title=project.title,
-        company=project.company,
-        role=project.role,
-        date_range=project.date_range,
-        raw_text=project.raw_text,
-        project_type=project.project_type,
-        priority=project.priority,
-        github_url=project.github_url,
-        created_at=project.created_at,
-        chunk_count=len(project.chunks) if project.chunks else 0,
+def _to_response(entry: WorkEntry) -> WorkEntryResponse:
+    """Convert a WorkEntry ORM model to response schema."""
+    return WorkEntryResponse(
+        id=entry.id,
+        title=entry.title,
+        entry_type=entry.entry_type.value if entry.entry_type else "project",
+        company=entry.company,
+        role=entry.role,
+        start_date=entry.start_date,
+        end_date=entry.end_date,
+        date_range=entry.date_range,  # computed property
+        raw_text=entry.raw_text,
+        project_type=entry.entry_type.value if entry.entry_type else "project",  # backward compat
+        priority=entry.priority,
+        github_url=entry.github_url,
+        created_at=entry.created_at,
+        chunk_count=len(entry.chunks) if entry.chunks else 0,
     )
 
 
-def _to_detail_response(project: Project) -> ProjectDetailResponse:
-    """Convert a Project with chunks to a detailed response."""
-    return ProjectDetailResponse(
-        id=project.id,
-        title=project.title,
-        company=project.company,
-        role=project.role,
-        date_range=project.date_range,
-        raw_text=project.raw_text,
-        project_type=project.project_type,
-        priority=project.priority,
-        github_url=project.github_url,
-        created_at=project.created_at,
-        chunk_count=len(project.chunks) if project.chunks else 0,
+def _to_detail_response(entry: WorkEntry) -> WorkEntryDetailResponse:
+    """Convert a WorkEntry with chunks to a detailed response."""
+    return WorkEntryDetailResponse(
+        id=entry.id,
+        title=entry.title,
+        entry_type=entry.entry_type.value if entry.entry_type else "project",
+        company=entry.company,
+        role=entry.role,
+        start_date=entry.start_date,
+        end_date=entry.end_date,
+        date_range=entry.date_range,
+        raw_text=entry.raw_text,
+        project_type=entry.entry_type.value if entry.entry_type else "project",
+        priority=entry.priority,
+        github_url=entry.github_url,
+        created_at=entry.created_at,
+        chunk_count=len(entry.chunks) if entry.chunks else 0,
         chunks=[
             ChunkResponse(
                 id=c.id,
@@ -63,108 +72,128 @@ def _to_detail_response(project: Project) -> ProjectDetailResponse:
                 qdrant_point_id=c.qdrant_point_id,
                 created_at=c.created_at,
             )
-            for c in (project.chunks or [])
+            for c in (entry.chunks or [])
         ],
     )
 
 
-def _run_ingestion(project_id: str):
-    """Background task to ingest a project."""
+def _resolve_entry_type(body) -> EntryType:
+    """Resolve entry_type from the request body, handling backward compat."""
+    if hasattr(body, "entry_type") and body.entry_type is not None:
+        return EntryType(body.entry_type.value)
+    # Fallback to project_type if provided (old clients)
+    if hasattr(body, "project_type") and body.project_type:
+        return WorkEntry.entry_type_from_project_type(body.project_type)
+    return EntryType.PROJECT
+
+
+def _run_ingestion(entry_id: str):
+    """Background task to ingest a work entry."""
     from app.database import SessionLocal
     db = SessionLocal()
     try:
-        # provider manager will just run inside ingestion
         ingestion_service.db = db
         pm = ProviderManager(db)
         ingestion_service.pm = pm
-        ingestion_service.ingest_project(project_id)
+        ingestion_service.ingest_project(entry_id)
     except Exception as e:
         import logging
-        logging.getLogger(__name__).error(f"Ingestion failed for project {project_id}: {e}")
+        logging.getLogger(__name__).error(f"Ingestion failed for entry {entry_id}: {e}")
     finally:
         db.close()
 
 
-@router.get("", response_model=list[ProjectResponse])
-def list_projects(db: Session = Depends(get_db)):
-    """List all projects with chunk counts."""
-    projects = db.query(Project).order_by(Project.created_at.desc()).all()
-    return [_to_response(p) for p in projects]
+@router.get("", response_model=list[WorkEntryResponse])
+def list_entries(db: Session = Depends(get_db)):
+    """List all work entries with chunk counts."""
+    entries = db.query(WorkEntry).order_by(WorkEntry.created_at.desc()).all()
+    return [_to_response(e) for e in entries]
 
 
-@router.post("", response_model=ProjectResponse, status_code=201)
-def create_project(
-    body: ProjectCreate,
+@router.post("", response_model=WorkEntryResponse, status_code=201)
+def create_entry(
+    body: WorkEntryCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """Create a new project and trigger background ingestion."""
-    project = Project(
+    """Create a new work entry and trigger background ingestion."""
+    entry = WorkEntry(
         id=str(uuid.uuid4()),
         title=body.title,
+        entry_type=_resolve_entry_type(body),
         company=body.company,
         role=body.role,
-        date_range=body.date_range,
+        start_date=body.start_date,
+        end_date=body.end_date,
         raw_text=body.raw_text,
-        project_type=body.project_type,
         priority=body.priority,
         github_url=body.github_url,
     )
-    db.add(project)
+    db.add(entry)
     db.commit()
-    db.refresh(project)
+    db.refresh(entry)
 
     # Trigger ingestion in the background
-    background_tasks.add_task(_run_ingestion, project.id)
+    background_tasks.add_task(_run_ingestion, entry.id)
 
-    return _to_response(project)
-
-
-@router.get("/{project_id}", response_model=ProjectDetailResponse)
-def get_project(project_id: str, db: Session = Depends(get_db)):
-    """Get a project with all its chunks."""
-    project = db.query(Project).get(project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return _to_detail_response(project)
+    return _to_response(entry)
 
 
-@router.put("/{project_id}", response_model=ProjectResponse)
-def update_project(
-    project_id: str,
-    body: ProjectUpdate,
+@router.get("/{entry_id}", response_model=WorkEntryDetailResponse)
+def get_entry(entry_id: str, db: Session = Depends(get_db)):
+    """Get a work entry with all its chunks."""
+    entry = db.query(WorkEntry).get(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Work entry not found")
+    return _to_detail_response(entry)
+
+
+@router.put("/{entry_id}", response_model=WorkEntryResponse)
+def update_entry(
+    entry_id: str,
+    body: WorkEntryUpdate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """Update a project. Re-triggers ingestion if raw_text changed."""
-    project = db.query(Project).get(project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+    """Update a work entry. Re-triggers ingestion if raw_text changed."""
+    entry = db.query(WorkEntry).get(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Work entry not found")
 
     update_data = body.model_dump(exclude_unset=True)
-    text_changed = "raw_text" in update_data and update_data["raw_text"] != project.raw_text
+    text_changed = "raw_text" in update_data and update_data["raw_text"] != entry.raw_text
+
+    # Handle entry_type from either new or legacy field
+    if "entry_type" in update_data and update_data["entry_type"] is not None:
+        update_data["entry_type"] = EntryType(update_data["entry_type"])
+    elif "project_type" in update_data and update_data["project_type"]:
+        update_data["entry_type"] = WorkEntry.entry_type_from_project_type(update_data["project_type"])
+
+    # Remove backward-compat fields before setting attributes
+    update_data.pop("project_type", None)
+    update_data.pop("date_range", None)
 
     for key, value in update_data.items():
-        setattr(project, key, value)
+        setattr(entry, key, value)
 
     db.commit()
-    db.refresh(project)
+    db.refresh(entry)
 
     if text_changed:
-        background_tasks.add_task(_run_ingestion, project.id)
+        background_tasks.add_task(_run_ingestion, entry.id)
 
-    return _to_response(project)
+    return _to_response(entry)
 
 
-@router.delete("/{project_id}")
-def delete_project(project_id: str, db: Session = Depends(get_db)):
-    """Delete a project, its chunks, and associated Qdrant vectors."""
-    project = db.query(Project).get(project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+@router.delete("/{entry_id}")
+def delete_entry(entry_id: str, db: Session = Depends(get_db)):
+    """Delete a work entry, its chunks, and associated Qdrant vectors."""
+    entry = db.query(WorkEntry).get(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Work entry not found")
 
     # Delete Qdrant points
-    point_ids = [c.qdrant_point_id for c in project.chunks if c.qdrant_point_id]
+    point_ids = [c.qdrant_point_id for c in entry.chunks if c.qdrant_point_id]
     if point_ids:
         try:
             qdrant_service.delete_points(point_ids)
@@ -173,9 +202,9 @@ def delete_project(project_id: str, db: Session = Depends(get_db)):
             logging.getLogger(__name__).warning(f"Failed to delete Qdrant points: {e}")
 
     # Cascade deletes chunks via ORM relationship
-    db.delete(project)
+    db.delete(entry)
     db.commit()
-    return {"detail": f"Project '{project.title}' deleted"}
+    return {"detail": f"Work entry '{entry.title}' deleted"}
 
 
 @router.post("/digest-repo")
@@ -195,7 +224,7 @@ async def digest_repository(body: RepoDigestRequest):
         summary, tree, content = await ingest_async(url, token=token)
         # Format the result nicely: tree structure + file contents
         full_text = f"Repository: {url}\n\nDirectory Structure:\n{tree}\n\nFiles Content:\n{content}"
-        
+
         # Extract repository name from URL for suggestions
         repo_name = "Repository"
         parts = url.rstrip("/").split("/")
@@ -217,4 +246,3 @@ async def digest_repository(body: RepoDigestRequest):
             status_code=500,
             detail=f"Failed to digest repository: {str(e)}"
         )
-

@@ -1,4 +1,4 @@
-"""PDF rendering service – LaTeX/Jinja2 to PDF with pdflatex fallback."""
+"""PDF rendering service – LaTeX/Jinja2 to PDF with dual-context escaping."""
 
 import logging
 import os
@@ -29,30 +29,62 @@ jinja_env = Environment(
 )
 
 
-def _escape_latex(text: str) -> str:
-    """Escape special LaTeX characters in text."""
+# ---------------------------------------------------------------------------
+# Dual-context LaTeX escaping
+# ---------------------------------------------------------------------------
+
+import re
+
+# Structural fields (title, company, date_range) — escape everything including _
+_LATEX_STRUCTURAL_CHARS = {
+    "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#",
+    "_": r"\_", "{": r"\{", "}": r"\}",
+    "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+    "<": r"\textless{}", ">": r"\textgreater{}"
+}
+
+def escape_structural(text: str) -> str:
+    """Escape special LaTeX characters in structural fields (titles, company names, dates).
+
+    Escapes everything including underscores and braces — safe for fields that don't contain
+    LaTeX formatting commands.
+    """
     if not text:
         return ""
-    # NOTE: intentionally NOT escaping _ { } because
-    # Gemma output may contain \textbf{} \href{} \_ etc.
-    special_chars = {
-        "&": r"\&",
-        "%": r"\%",
-        "$": r"\$",
-        "#": r"\#",
-        "~": r"\textasciitilde{}",
-        "^": r"\textasciicircum{}",
-    }
-    for char, replacement in special_chars.items():
+    # Escape backslash first to avoid double-escaping
+    text = text.replace("\\", r"\textbackslash{}")
+    for char, replacement in _LATEX_STRUCTURAL_CHARS.items():
         text = text.replace(char, replacement)
     return text
+
+
+def escape_bullet(text: str) -> str:
+    """Escape special LaTeX characters in bullet text.
+
+    Preserves \\textbf{}, \\href{}, and other LaTeX commands that the LLM generates.
+    Escapes & % $ # and unescaped underscores.
+    """
+    if not text:
+        return ""
+    # Escape basic special characters
+    for char, replacement in [("&", r"\&"), ("%", r"\%"), ("$", r"\$"), ("#", r"\#")]:
+        text = text.replace(char, replacement)
+    
+    # Escape underscores that aren't already escaped
+    text = re.sub(r'(?<!\\)_', r'\_', text)
+    return text
+
+
+# Backward compatibility alias
+_escape_latex = escape_structural
 
 
 def render_resume_to_latex(resume_data: dict, profile=None) -> str:
     """Render a resume data dict to a LaTeX string using the Jinja2 template.
 
     Args:
-        resume_data: The structured resume JSON from the LLM.
+        resume_data: The structured resume JSON from the generation pipeline.
+        profile: UserProfile ORM object for header info.
 
     Returns:
         A LaTeX document string.
@@ -72,8 +104,15 @@ def render_resume_to_latex(resume_data: dict, profile=None) -> str:
                 "college": profile.college or "",
                 "college_years": f"{getattr(profile, 'college_start_year', '') or ''} \u2013 {profile.graduation_year or ''}".strip(" \u2013"),
                 "degree": profile.degree or "",
+                "coursework": profile.coursework or "",
             }
-        return template.render(resume=resume_data, profile=profile_dict, escape=_escape_latex)
+        return template.render(
+            resume=resume_data,
+            profile=profile_dict,
+            esc=escape_structural,
+            esc_bullet=escape_bullet,
+            escape=escape_structural,  # backward compat
+        )
     except Exception as e:
         logger.error(f"Failed to render LaTeX template: {e}")
         # Fallback: return a minimal LaTeX document
@@ -82,8 +121,8 @@ def render_resume_to_latex(resume_data: dict, profile=None) -> str:
 
 def _fallback_latex(resume_data: dict) -> str:
     """Generate a minimal LaTeX resume when the template fails."""
-    name = _escape_latex(resume_data.get("name", "Candidate"))
-    summary = _escape_latex(resume_data.get("summary", ""))
+    name = escape_structural(resume_data.get("name", "Candidate"))
+    summary = escape_structural(resume_data.get("summary", ""))
 
     lines = [
         r"\documentclass[11pt,a4paper]{article}",
@@ -103,13 +142,13 @@ def _fallback_latex(resume_data: dict) -> str:
     if experience:
         lines.append(r"\section*{Experience}")
         for exp in experience:
-            title = _escape_latex(exp.get("title", ""))
-            company = _escape_latex(exp.get("company", ""))
-            date_range = _escape_latex(exp.get("date_range", ""))
+            title = escape_structural(exp.get("title", ""))
+            company = escape_structural(exp.get("company", ""))
+            date_range = escape_structural(exp.get("date_range", ""))
             lines.append(rf"\textbf{{{title}}} -- {company} \hfill {date_range}")
             lines.append(r"\begin{itemize}[leftmargin=*,nosep]")
             for bullet in exp.get("bullets", []):
-                lines.append(rf"  \item {_escape_latex(bullet)}")
+                lines.append(rf"  \item {escape_bullet(bullet)}")
             lines.append(r"\end{itemize}")
             lines.append(r"\vspace{0.5em}")
 
@@ -118,15 +157,15 @@ def _fallback_latex(resume_data: dict) -> str:
     if projects:
         lines.append(r"\section*{Projects}")
         for proj in projects:
-            title = _escape_latex(proj.get("title", ""))
-            date_range = _escape_latex(proj.get("date_range", ""))
-            tech = _escape_latex(proj.get("technologies", ""))
+            title = escape_structural(proj.get("title", ""))
+            date_range = escape_structural(proj.get("date_range", ""))
+            tech = escape_structural(proj.get("technologies", ""))
             lines.append(rf"\textbf{{{title}}} \hfill {date_range}")
             if tech:
                 lines.append(rf"\\ \textit{{Technologies: {tech}}}")
             lines.append(r"\begin{itemize}[leftmargin=*,nosep]")
             for bullet in proj.get("bullets", []):
-                lines.append(rf"  \item {_escape_latex(bullet)}")
+                lines.append(rf"  \item {escape_bullet(bullet)}")
             lines.append(r"\end{itemize}")
             lines.append(r"\vspace{0.5em}")
 
@@ -136,8 +175,8 @@ def _fallback_latex(resume_data: dict) -> str:
         lines.append(r"\section*{Skills}")
         for category, skill_list in skills.items():
             if skill_list:
-                cat_name = _escape_latex(category.replace("_", " ").title())
-                skill_str = _escape_latex(", ".join(skill_list))
+                cat_name = escape_structural(category.replace("_", " ").title())
+                skill_str = escape_structural(", ".join(skill_list))
                 lines.append(rf"\textbf{{{cat_name}:}} {skill_str} \\")
 
     lines.append(r"\end{document}")
@@ -173,6 +212,7 @@ def render_pdf(latex_content: str) -> str | None:
 
         try:
             # Run pdflatex twice for references
+            latex_errors = []
             for _ in range(2):
                 result = subprocess.run(
                     ["pdflatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path],
@@ -180,6 +220,14 @@ def render_pdf(latex_content: str) -> str | None:
                     text=True,
                     timeout=30,
                 )
+                # Capture LaTeX errors
+                if result.returncode != 0:
+                    for line in result.stdout.split("\n"):
+                        if line.startswith("! ") or "LaTeX Error" in line:
+                            latex_errors.append(line.strip())
+
+            if latex_errors:
+                logger.warning(f"LaTeX warnings/errors: {'; '.join(latex_errors[:5])}")
 
             compiled_pdf = os.path.join(tmpdir, "resume.pdf")
             if os.path.exists(compiled_pdf):
@@ -188,7 +236,7 @@ def render_pdf(latex_content: str) -> str | None:
                 logger.info(f"Generated PDF: {output_path}")
                 return str(output_path)
             else:
-                logger.error(f"pdflatex did not produce a PDF. Stderr: {result.stderr[:500]}")
+                logger.error(f"pdflatex did not produce a PDF. Errors: {'; '.join(latex_errors[:3])}")
                 return None
         except subprocess.TimeoutExpired:
             logger.error("pdflatex timed out")
@@ -196,3 +244,22 @@ def render_pdf(latex_content: str) -> str | None:
         except Exception as e:
             logger.error(f"PDF compilation failed: {e}")
             return None
+
+def get_pdf_page_count(pdf_path: str) -> int:
+    """Get the number of pages in a compiled PDF using pdfinfo."""
+    if not pdf_path or not os.path.exists(pdf_path):
+        return 0
+    try:
+        result = subprocess.run(
+            ["pdfinfo", pdf_path],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5
+        )
+        for line in result.stdout.split("\n"):
+            if line.startswith("Pages:"):
+                return int(line.split(":")[1].strip())
+    except Exception as e:
+        logger.warning(f"Could not determine PDF page count: {e}")
+    return 1

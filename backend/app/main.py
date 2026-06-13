@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.models import LLMProvider, ResumeConfig  # noqa: F401 – ensures models are registered
+from app.models import LLMProvider, ResumeConfig, UserSkill  # noqa: F401 – ensures models are registered
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -156,7 +156,7 @@ app.add_middleware(
 )
 
 # Mount all routers under /api prefix
-from app.routers import health, providers, projects, resumes, config, github, history, profile  # noqa: E402
+from app.routers import health, providers, projects, resumes, config, github, history, profile, skills  # noqa: E402
 
 app.include_router(health.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
@@ -166,4 +166,5 @@ app.include_router(config.router, prefix="/api")
 app.include_router(github.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(profile.router, prefix="/api")
+app.include_router(skills.router, prefix="/api")
 

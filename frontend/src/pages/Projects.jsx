@@ -51,7 +51,7 @@ export default function Projects() {
       p.title.toLowerCase().includes(search.toLowerCase()) ||
       (p.company || '').toLowerCase().includes(search.toLowerCase()) ||
       (p.role || '').toLowerCase().includes(search.toLowerCase()) ||
-      p.project_type.toLowerCase().includes(search.toLowerCase())
+      (p.entry_type || p.project_type || '').toLowerCase().includes(search.toLowerCase())
   );
 
   return (
@@ -107,8 +107,13 @@ export default function Projects() {
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.375rem' }}>
                   <span style={{ fontWeight: 700, fontSize: '1rem' }}>{project.title}</span>
-                  <span className={project.project_type === 'oss' ? 'badge badge-green' : 'badge badge-violet'}>
-                    {project.project_type.toUpperCase()}
+                  <span className={
+                    (project.entry_type || project.project_type) === 'oss' ? 'badge badge-green' :
+                    (project.entry_type || project.project_type) === 'work_experience' ? 'badge badge-emerald' :
+                    'badge badge-violet'
+                  }>
+                    {(project.entry_type || project.project_type) === 'work_experience' ? 'WORK EXP' :
+                     (project.entry_type || project.project_type) === 'oss' ? 'OSS' : 'PROJECT'}
                   </span>
                   <span className="badge" style={{ background: 'rgba(255, 255, 255, 0.05)' }}>
                     {'⭐'.repeat(project.priority)}
@@ -120,7 +125,9 @@ export default function Projects() {
                 <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', display: 'flex', gap: '1rem' }}>
                   {project.company && <span>{project.company}</span>}
                   {project.role && <span>· {project.role}</span>}
-                  {project.date_range && <span>· {project.date_range}</span>}
+                  {(project.date_range || (project.start_date && `${project.start_date} – ${project.end_date || 'Present'}`)) && (
+                    <span>· {project.date_range || `${project.start_date} – ${project.end_date || 'Present'}`}</span>
+                  )}
                   {project.github_url && <a href={project.github_url} target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent-violet)' }}>· GitHub</a>}
                 </div>
                 <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', marginTop: '0.375rem' }}>

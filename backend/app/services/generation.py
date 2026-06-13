@@ -1,4 +1,13 @@
-"""Resume generation service – JD analysis, retrieval, LLM generation, and PDF rendering."""
+"""Resume generation service – multi-stage pipeline orchestrator.
+
+Replaces the old monolithic single-shot approach with a 6-stage pipeline:
+1. JD Parser → structured JD fields
+2. Skill Bridge → match/adjacent/gap analysis
+3. Typed Retrieval → separate context per section with MMR
+4. Per-Entry Bullet Generator → focused, achievement-oriented bullets
+5. ATS Verification → deterministic keyword scoring
+6. PDF Rendering → LaTeX compilation
+"""
 
 import json
 import logging
@@ -8,154 +17,22 @@ from sqlalchemy.orm import Session
 
 from app.models.generated_resume import GeneratedResume
 from app.models.resume_config import ResumeConfig
+from app.models.user_skill import UserSkill
 from app.providers.manager import ProviderManager
+from app.services.ats_verifier import build_resume_text, calculate_ats_score
+from app.services.bullet_generator import BulletGenerator
+from app.services.jd_parser import JDParser
 from app.services.pdf_service import render_pdf
 from app.services.qdrant_service import qdrant_service
+from app.services.retrieval import RetrievedEntry, TypedRetriever
+from app.services.skill_bridge import SkillBridgeAnalyzer
 from app.services.ingestion import sparse_model
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Static OSS data — never let the LLM invent these.
-# Add more orgs here if you contribute elsewhere.
-# ---------------------------------------------------------------------------
-USER_OSS = [
-    {
-        "role": "Open-Source Contributor",
-        "org_display": "Learning Equality (Kolibri Ecosystem)",
-        "org_github": "github.com/learningequality",
-        "duration": "2024 \u2013 Present",
-        "contributions": [
-            "Contributed across multiple Kolibri repositories focusing on developer tooling and frontend architecture.",
-            "Built GitHub Actions automation for issue triage, label management, and contributor workflows.",
-            "Refactored frontend notification handling by migrating state from Vuex to the Composition API.",
-            "Implemented accessibility improvements (ARIA patterns, keyboard navigation); acknowledged in Kolibri 0.18.1 release notes.",
-        ],
-    }
-]
-
-
-def _format_oss_context() -> str:
-    """Format USER_OSS as a numbered contribution list for the prompt."""
-    lines = []
-    for oss in USER_OSS:
-        lines.append(f"Org: {oss['org_display']}")
-        lines.append(f"GitHub: {oss['org_github']}")
-        lines.append(f"Duration: {oss['duration']}")
-        lines.append("Contributions (copy verbatim, do NOT paraphrase):")
-        for i, c in enumerate(oss["contributions"], 1):
-            lines.append(f"  [{i}] {c}")
-        lines.append("")
-    return "\n".join(lines)
-
-
-RESUME_GENERATION_PROMPT = """You are an expert resume writer specializing in ATS-optimized resumes for engineering roles.
-
-## Instructions
-Generate a tailored resume based on the candidate's work experience, target job description, and personal info.
-The resume must be ATS-safe: use standard section headings, avoid tables/columns in text, include relevant keywords from the JD.
-
-## STRICT ONE-PAGE CONSTRAINT
-The resume MUST fit on exactly ONE page. Obey these hard limits:
-- Maximum 5 bullets for experience entries.
-- Maximum 3 bullets per project.
-- Maximum 2 OSS contributions in the open_source section.
-- Skills: single line per category, no skill repeated across categories.
-- If content would overflow, cut the lowest-priority project entirely.
-- Do NOT include a summary/objective section — it is not in this resume format.
-
-## Candidate Configuration
-- Target Role: {target_role}
-- Years of Experience: {years_experience}
-- Skills Emphasis: {skills_emphasis}
-- Tone: {tone}
-
-## Candidate Personal & Education Info
-{personal_info}
-
-## Job Description
-{job_description}
-
-## Candidate Work Experience (retrieved from memory)
-{retrieved_context}
-
-## Open Source Contributions (use ONLY this data — copy contributions verbatim)
-{oss_context}
-
-## Open Source Instructions
-- Include the open_source section ONLY if the contributions are relevant to the JD.
-- org_display: ALWAYS use the full organization name from the list above (e.g., "Learning Equality (Kolibri Ecosystem)"). NEVER use repo names like ".github" or "kolibri-design-system".
-- org_github: use the org-level link from the list above, not individual repo links.
-- Pick the 2 most JD-relevant contributions from the numbered list above and copy them verbatim.
-- The Kolibri 0.18.1 release notes acknowledgment is a strong signal — include it if space permits.
-- If open_source is not relevant to the JD at all, return: "open_source": []
-
-## Output Format
-Respond with ONLY a valid JSON object. No markdown, no explanation, no backticks.
-
-{{
-  "experience": [
-    {{
-      "title": "Job Title",
-      "company": "Company Name",
-      "date_range": "Oct 2025 \u2013 Present",
-      "subtitle": "Optional one-line company descriptor e.g. FinTech / Quantitative Research Startup",
-      "bullets": [
-        "Achievement-oriented bullet. Use \\textbf{{KeyTerm}} to bold important technical terms."
-      ]
-    }}
-  ],
-  "open_source": [
-    {{
-      "role": "Open-Source Contributor",
-      "org_display": "Learning Equality (Kolibri Ecosystem)",
-      "org_github": "github.com/learningequality",
-      "duration": "2024 \u2013 Present",
-      "contributions": [
-        "Copied verbatim from the numbered list above..."
-      ]
-    }}
-  ],
-  "projects": [
-    {{
-      "title": "Project Name",
-      "technologies": "FastAPI, React, Docker, ...",
-      "github_url": "https://github.com/iamshobhraj/repo",
-      "gitlab_url": null,
-      "live_url": null,
-      "bullets": [
-        "Key technical achievement relevant to the JD..."
-      ]
-    }}
-  ],
-  "skills": {{
-    "languages": ["Python", "Go", "JavaScript", "TypeScript", "SQL"],
-    "backend": ["FastAPI", "Flask", "Node.js"],
-    "databases": ["PostgreSQL", "MongoDB", "SQLite"],
-    "infra": ["Docker", "GitHub Actions", "Redis", "Git"],
-    "concepts": ["System Design", "APIs", "OOP", "Event-Driven Systems"],
-    "tools": ["NumPy", "SciPy", "SQLAlchemy"]
-  }},
-  "interests": "backend systems, distributed systems, applied AI, automation.",
-  "ats_score": 85,
-  "ats_notes": "Brief explanation of ATS optimization applied"
-}}
-
-Rules:
-1. Skills categories must match EXACTLY: languages, backend, databases, infra, concepts, tools.
-2. No skill should appear in more than one category.
-3. Every project must include github_url, gitlab_url, live_url fields (null if not known).
-4. Use \\textbf{{}} in bullets to bold key technical terms — this is LaTeX and renders correctly.
-5. Never start a bullet with: helped, assisted, worked on, responsible for, collaborated on.
-6. Bullet formula: Action verb + Technology + Impact or Scope.
-7. Do NOT output name, contact, or education — those are injected from the database separately.
-8. Respond ONLY with valid JSON. No extra text.
-9. For date_range fields: if you cannot infer a date, use an EMPTY STRING (""). NEVER write "Dates not provided", "N/A", "Unknown", or any placeholder text.
-"""
-
 
 class ResumeGenerationService:
-    """Generates tailored resumes from job descriptions using RAG."""
+    """Generates tailored resumes from job descriptions using a multi-stage RAG pipeline."""
 
     def __init__(self, db: Session, provider_manager: ProviderManager):
         self.db = db
@@ -164,19 +41,32 @@ class ResumeGenerationService:
     def generate_resume(self, job_description: str) -> GeneratedResume:
         """Generate a resume tailored to the given job description.
 
-        Pipeline:
-        1. Embed the JD
-        2. Search Qdrant for relevant work chunks
-        3. Load resume config + user profile
-        4. Build prompt with context + JD + config + static OSS
-        5. Generate structured resume JSON via LLM
-        6. Post-process: overwrite personal info, education, OSS org names
-        7. Render to LaTeX and compile PDF
-        8. Save GeneratedResume + ResumeHistory records
+        Multi-stage pipeline:
+        1. Parse JD → structured fields (role, skills, keywords)
+        2. Skill bridge → match candidate skills against JD requirements
+        3. Typed retrieval → fetch relevant work entries per section
+        4. Bullet generation → focused LLM calls per entry
+        5. ATS verification → deterministic keyword scoring
+        6. Assemble JSON → render LaTeX → compile PDF
         """
         resume_id = str(uuid.uuid4())
 
-        # 1. Embed the JD
+        # ── Stage 1: Parse JD ──────────────────────────────────────────
+        jd_parser = JDParser(self.db, self.pm)
+        parsed_jd = jd_parser.parse(job_description)
+        logger.info(f"Stage 1 complete: role={parsed_jd.role_title}, "
+                     f"{len(parsed_jd.ats_keywords)} ATS keywords")
+
+        # ── Stage 2: Skill Bridge Analysis ─────────────────────────────
+        skill_bridge_analyzer = SkillBridgeAnalyzer(self.db, self.pm)
+        skill_bridge = skill_bridge_analyzer.analyze(
+            required_skills=parsed_jd.required_skills,
+            nice_to_have_skills=parsed_jd.nice_to_have_skills,
+        )
+        logger.info(f"Stage 2 complete: {len(skill_bridge.matched)} matched, "
+                     f"{len(skill_bridge.adjacent)} adjacent, {len(skill_bridge.gaps)} gaps")
+
+        # ── Stage 3: Typed Retrieval ───────────────────────────────────
         logger.info("Embedding job description...")
         jd_vector = self.pm.embed_text(job_description)
 
@@ -190,48 +80,18 @@ class ResumeGenerationService:
             except Exception as e:
                 logger.warning(f"Failed to generate sparse embedding for JD: {e}")
 
-        # 2. Search Qdrant for relevant chunks
-        logger.info("Searching for relevant work experience...")
-        results = qdrant_service.search(
+        retriever = TypedRetriever()
+        retrieval_result = retriever.retrieve(
             query_vector=jd_vector,
-            top_k=15,
             sparse_indices=sparse_indices,
             sparse_values=sparse_values,
         )
+        logger.info(f"Stage 3 complete: {retrieval_result.total_count} entries "
+                     f"(work={len(retrieval_result.work_entries)}, "
+                     f"proj={len(retrieval_result.project_entries)}, "
+                     f"oss={len(retrieval_result.oss_entries)})")
 
-        retrieved_context = ""
-        for i, point in enumerate(results, 1):
-            payload = point.payload
-            score_str = (
-                f" (Score: {point.score:.2f})"
-                if hasattr(point, "score") and point.score
-                else ""
-            )
-            retrieved_context += f"\n### Project/Experience {i}{score_str}\n"
-            retrieved_context += (
-                f"**{payload.get('title', 'N/A')}** at {payload.get('company', 'N/A')}\n"
-            )
-            retrieved_context += (
-                f"Role: {payload.get('role', 'N/A')} | "
-                f"Type: {payload.get('project_type', 'personal')} | "
-                f"Priority: {payload.get('priority', 3)}/5\n"
-            )
-            if payload.get("summary"):
-                retrieved_context += f"Summary: {payload['summary']}\n"
-            if payload.get("skills"):
-                retrieved_context += f"Skills: {', '.join(payload['skills'])}\n"
-            if payload.get("technologies"):
-                retrieved_context += f"Technologies: {', '.join(payload['technologies'])}\n"
-            if payload.get("impact"):
-                retrieved_context += f"Impact: {'; '.join(payload['impact'])}\n"
-
-        if not retrieved_context.strip():
-            retrieved_context = (
-                "No relevant work experience found in the database. "
-                "Generate a template resume using only the personal info provided."
-            )
-
-        # 3. Load resume config
+        # ── Load config + profile ──────────────────────────────────────
         config_row = self.db.query(ResumeConfig).get("default")
         if config_row and config_row.config_json:
             try:
@@ -241,219 +101,227 @@ class ResumeGenerationService:
         else:
             config_data = {}
 
-        target_role = config_data.get("target_role", "Software Engineer")
-        years_experience = config_data.get("years_experience", 0)
-        skills_emphasis = ", ".join(config_data.get("skills_emphasis", []))
-        tone = config_data.get("tone", "technical, direct")
+        target_role = parsed_jd.role_title or config_data.get("target_role", "Software Engineer")
 
-        # 4. Load user profile
         from app.models.user_profile import UserProfile
-
         profile = self.db.query(UserProfile).first()
         if not profile:
             profile = UserProfile(
-                name="Candidate Name",
-                email="email@example.com",
-                phone="",
-                github="",
-                linkedin="",
-                location="",
-                college="",
-                degree="",
-                graduation_year="",
-                coursework="",
+                name="Candidate Name", email="email@example.com",
+                phone="", github="", linkedin="", location="",
+                college="", degree="", graduation_year="", coursework="",
             )
 
-        personal_info_str = (
-            f"Name: {profile.name}\n"
-            f"Email: {profile.email}\n"
-            f"Phone: {profile.phone or 'N/A'}\n"
-            f"GitHub: {profile.github or 'N/A'}\n"
-            f"LinkedIn: {profile.linkedin or 'N/A'}\n"
-            f"Location: {profile.location or 'N/A'}\n"
-            f"College: {profile.college or 'N/A'}\n"
-            f"Degree: {profile.degree or 'N/A'}\n"
-            f"Graduation Year: {profile.graduation_year or 'N/A'}\n"
-            f"Coursework: {profile.coursework or 'N/A'}"
-        )
+        # ── Stage 4: Per-Entry Bullet Generation ───────────────────────
+        bullet_gen = BulletGenerator(self.pm)
 
-        # 5. Build prompt and call LLM
-        prompt = RESUME_GENERATION_PROMPT.format(
+        # Get user skills for skills section
+        user_skills = self.db.query(UserSkill).all()
+        user_skills_str = ", ".join([f"{s.skill_name} ({s.category})" for s in user_skills])
+
+        # Generate experience section (from work entries)
+        experience_entries = []
+        all_entry_skills = []
+        for entry in retrieval_result.work_entries:
+            try:
+                bullets = bullet_gen.generate_bullets(
+                    entry=entry,
+                    target_role=target_role,
+                    ats_keywords=parsed_jd.ats_keywords[:10],
+                    framing_hints=skill_bridge.adjacent,
+                    num_bullets=4 if entry.priority >= 4 else 3,
+                    date_range=entry.title,  # Will be replaced by actual dates if available
+                )
+                experience_entries.append({
+                    "title": entry.role or target_role,
+                    "company": entry.company or entry.title,
+                    "date_range": "",  # Will be populated from DB if available
+                    "subtitle": entry.domain or "",
+                    "bullets": bullets,
+                    "_work_entry_id": entry.work_entry_id,
+                })
+                all_entry_skills.extend(entry.skills + entry.technologies)
+            except Exception as e:
+                logger.warning(f"Bullet generation failed for '{entry.title}': {e}")
+                continue
+
+        # Generate project section (from personal projects)
+        project_entries = []
+        for entry in retrieval_result.project_entries:
+            try:
+                bullets = bullet_gen.generate_bullets(
+                    entry=entry,
+                    target_role=target_role,
+                    ats_keywords=parsed_jd.ats_keywords[:8],
+                    framing_hints=skill_bridge.adjacent,
+                    num_bullets=3,
+                )
+                proj_data = {
+                    "title": entry.title,
+                    "technologies": ", ".join(list(set(entry.skills + entry.technologies))[:8]),
+                    "github_url": None,
+                    "gitlab_url": None,
+                    "live_url": None,
+                    "bullets": bullets,
+                }
+                project_entries.append(proj_data)
+                all_entry_skills.extend(entry.skills + entry.technologies)
+            except Exception as e:
+                logger.warning(f"Bullet generation failed for project '{entry.title}': {e}")
+                continue
+
+        # Generate OSS section (from OSS entries)
+        oss_entries = []
+        for entry in retrieval_result.oss_entries:
+            try:
+                bullets = bullet_gen.generate_bullets(
+                    entry=entry,
+                    target_role=target_role,
+                    ats_keywords=parsed_jd.ats_keywords[:6],
+                    framing_hints=skill_bridge.adjacent,
+                    num_bullets=2,
+                )
+                oss_entries.append({
+                    "role": entry.role or "Open-Source Contributor",
+                    "org_display": entry.company or entry.title,
+                    "org_github": "",  # Will be enriched from DB
+                    "duration": "",
+                    "contributions": bullets,
+                    "_work_entry_id": entry.work_entry_id,
+                })
+                all_entry_skills.extend(entry.skills + entry.technologies)
+            except Exception as e:
+                logger.warning(f"Bullet generation failed for OSS '{entry.title}': {e}")
+                continue
+
+        logger.info(f"Stage 4 complete: {len(experience_entries)} experiences, "
+                     f"{len(project_entries)} projects, {len(oss_entries)} OSS")
+
+        # ── Generate Skills Section ────────────────────────────────────
+        skills_section = bullet_gen.generate_skills_section(
             target_role=target_role,
-            years_experience=years_experience,
-            skills_emphasis=skills_emphasis or "No specific emphasis",
-            tone=tone,
-            job_description=job_description,
-            retrieved_context=retrieved_context,
-            personal_info=personal_info_str,
-            oss_context=_format_oss_context(),
+            required_skills=parsed_jd.required_skills,
+            nice_to_have_skills=parsed_jd.nice_to_have_skills,
+            user_skills_str=user_skills_str,
+            entry_skills=all_entry_skills,
+            matched_skills=skill_bridge.matched,
+            adjacent_skills=skill_bridge.adjacent,
         )
 
-        logger.info("Generating resume content via LLM...")
-        response = self.pm.generate(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=4096,
-        )
+        # ── Enrich entries with DB data ────────────────────────────────
+        from app.models.work_entry import WorkEntry
+        self._enrich_from_db(experience_entries, oss_entries, project_entries)
 
-        # 6. Parse JSON — strip markdown fences if present
-        cleaned = response.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            end = -1 if lines[-1].strip() == "```" else len(lines)
-            cleaned = "\n".join(lines[1:-1]).strip()
-
-        # Bug-fix: json.loads interprets \t inside JSON strings as a tab character,
-        # which turns LaTeX "\textbf" into a tab + "extbf".  We scan the raw LLM
-        # response char-by-char and double any backslash that is NOT a genuine JSON
-        # escape.  The only JSON escapes we preserve are:
-        #   \"  \\  \uXXXX
-        # We intentionally do NOT preserve \t \n \b \f \r as "valid" JSON escapes
-        # because LLMs use bare \t as part of LaTeX macros (\textbf, \textit, etc.),
-        # and they never emit real \t tab escapes in resume text anyway.
-        def _escape_latex_backslashes(raw: str) -> str:
-            """Double bare backslashes in JSON string values that aren't \\, \", or \\uXXXX."""
-            result: list[str] = []
-            in_string = False
-            i = 0
-            while i < len(raw):
-                ch = raw[i]
-                if ch == '"' and (i == 0 or raw[i - 1] != '\\'):
-                    in_string = not in_string
-                    result.append(ch)
-                    i += 1
-                elif in_string and ch == '\\':
-                    next_ch = raw[i + 1] if i + 1 < len(raw) else ''
-                    if next_ch == '\\':
-                        # \\  →  already-escaped backslash: consume both, emit as-is.
-                        result.append('\\\\')
-                        i += 2
-                    elif next_ch == '"':
-                        # \"  →  escaped quote: leave it alone.
-                        result.append(ch)
-                        i += 1
-                    elif next_ch == 'u':
-                        # \uXXXX  →  unicode escape: leave it alone.
-                        result.append(ch)
-                        i += 1
-                    else:
-                        # Everything else (\t \n \b \f \r \textbf etc.): double it.
-                        result.append('\\\\')
-                        i += 1
-                else:
-                    result.append(ch)
-                    i += 1
-            return ''.join(result)
-
-        cleaned = _escape_latex_backslashes(cleaned)
-
-        try:
-            resume_data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            logger.error("Failed to parse LLM response as JSON")
-            resume_data = {"error": "Failed to parse LLM response", "raw": cleaned}
-
-        # 7. Post-process
-        if isinstance(resume_data, dict) and "error" not in resume_data:
-
-            # Personal info — always from DB, never from LLM
-            resume_data["name"] = profile.name
-            resume_data["contact"] = {
+        # ── Assemble Resume JSON ───────────────────────────────────────
+        resume_data = {
+            "name": profile.name,
+            "contact": {
                 "email": profile.email,
                 "phone": profile.phone or "",
                 "github": profile.github or "",
                 "linkedin": profile.linkedin or "",
                 "location": profile.location or "",
-            }
-            # Flat copies for Jinja2 template convenience
-            resume_data["email"] = profile.email
-            resume_data["phone"] = profile.phone or ""
-            resume_data["github"] = profile.github or ""
-            resume_data["linkedin"] = profile.linkedin or ""
-            resume_data["location"] = profile.location or ""
+            },
+            "email": profile.email,
+            "phone": profile.phone or "",
+            "github": profile.github or "",
+            "linkedin": profile.linkedin or "",
+            "location": profile.location or "",
+            "education": [
+                {
+                    "institution": profile.college or "",
+                    "degree": profile.degree or "",
+                    "year": profile.graduation_year or "",
+                    "coursework": profile.coursework or "",
+                }
+            ] if (profile.college or profile.degree) else [],
+            "experience": experience_entries,
+            "open_source": oss_entries,
+            "projects": project_entries,
+            "skills": skills_section,
+            "interests": "",
+        }
 
-            # Education — always from DB
-            if profile.college or profile.degree:
-                resume_data["education"] = [
-                    {
-                        "institution": profile.college or "",
-                        "degree": profile.degree or "",
-                        "year": profile.graduation_year or "",
-                        "coursework": profile.coursework or "",
-                    }
-                ]
+        # Clean internal fields
+        for exp in resume_data["experience"]:
+            exp.pop("_work_entry_id", None)
+        for oss in resume_data["open_source"]:
+            oss.pop("_work_entry_id", None)
 
-            # OSS — correct org metadata from static data; validate contributions
-            if resume_data.get("open_source"):
-                corrected = []
-                for entry in resume_data["open_source"]:
-                    static = _find_matching_oss(entry)
-                    if static:
-                        entry["role"] = static["role"]
-                        entry["org_display"] = static["org_display"]
-                        entry["org_github"] = static["org_github"]
-                        entry["duration"] = static["duration"]
-                        valid = _validate_contributions(
-                            entry.get("contributions", []),
-                            static["contributions"],
-                        )
-                        # Fall back to first 2 real contributions if LLM hallucinated
-                        entry["contributions"] = valid or static["contributions"][:2]
-                    corrected.append(entry)
-                resume_data["open_source"] = corrected
+        # ── Stage 5: ATS Verification ──────────────────────────────────
+        resume_text = build_resume_text(resume_data)
+        ats_result = calculate_ats_score(resume_text, parsed_jd.ats_keywords)
+        resume_data["ats_score"] = ats_result["score"]
+        resume_data["ats_matched"] = ats_result["matched"]
+        resume_data["ats_missing"] = ats_result["missing_high_priority"]
+        resume_data["ats_notes"] = (
+            f"{ats_result['score']}% keyword match. "
+            f"Matched: {len(ats_result['matched'])}/{len(parsed_jd.ats_keywords)} keywords. "
+            f"Missing: {', '.join(ats_result['missing_high_priority'][:3]) or 'none'}"
+        )
 
-            # Skills — ensure all expected keys exist
-            expected_skill_keys = [
-                "languages", "backend", "databases", "infra", "concepts", "tools"
-            ]
-            skills = resume_data.get("skills", {})
-            if isinstance(skills, dict):
-                for key in expected_skill_keys:
-                    skills.setdefault(key, [])
-                resume_data["skills"] = skills
+        logger.info(f"Stage 5 complete: ATS score = {ats_result['score']}%")
 
-            # Projects — ensure url fields always present
-            for proj in resume_data.get("projects", []):
-                proj.setdefault("github_url", None)
-                proj.setdefault("gitlab_url", None)
-                proj.setdefault("live_url", None)
+        # If ATS score is low, try to inject missing keywords into skills
+        if ats_result["score"] < 70 and ats_result["missing_high_priority"]:
+            self._inject_missing_keywords(resume_data, ats_result["missing_high_priority"])
 
-            # Bug-fix: scrub placeholder date strings the LLM sometimes emits
-            _DATE_PLACEHOLDERS = {
-                "dates not provided", "n/a", "unknown", "not provided",
-                "date not provided", "dates unknown",
-            }
-            for exp in resume_data.get("experience", []):
-                dr = exp.get("date_range", "")
-                if isinstance(dr, str) and dr.strip().lower() in _DATE_PLACEHOLDERS:
-                    exp["date_range"] = ""
-            for proj in resume_data.get("projects", []):
-                dr = proj.get("date_range", "")
-                if isinstance(dr, str) and dr.strip().lower() in _DATE_PLACEHOLDERS:
-                    proj["date_range"] = ""
-
-        # 8. Render PDF
+        # ── Stage 6: Render PDF & Page-Fit ─────────────────────────────
         latex_content = None
         pdf_path = None
         try:
-            from app.services.pdf_service import render_resume_to_latex
-
+            from app.services.pdf_service import render_resume_to_latex, get_pdf_page_count
+            
+            # First pass
             latex_content = render_resume_to_latex(resume_data, profile=profile)
             pdf_path = render_pdf(latex_content)
+            
+            # If > 1 page, run a shrink pass
+            if pdf_path and get_pdf_page_count(pdf_path) > 1:
+                logger.info("PDF exceeded 1 page, running shrink pass...")
+                
+                # Shrink 1: Reduce bullets per entry to max 3 (if not already)
+                for exp in resume_data["experience"]:
+                    if len(exp.get("bullets", [])) > 3:
+                        exp["bullets"] = exp["bullets"][:3]
+                
+                # Shrink 2: Reduce OSS and Projects
+                if len(resume_data["projects"]) > 2:
+                    resume_data["projects"] = resume_data["projects"][:2]
+                
+                if len(resume_data["open_source"]) > 1:
+                    resume_data["open_source"] = resume_data["open_source"][:1]
+                
+                # Re-compile
+                latex_content = render_resume_to_latex(resume_data, profile=profile)
+                pdf_path = render_pdf(latex_content)
+                
+                # If STILL > 1 page, aggressive shrink
+                if pdf_path and get_pdf_page_count(pdf_path) > 1:
+                    logger.info("PDF still > 1 page, running aggressive shrink...")
+                    for exp in resume_data["experience"]:
+                        if len(exp.get("bullets", [])) > 2:
+                            exp["bullets"] = exp["bullets"][:2]
+                    
+                    if len(resume_data["projects"]) > 1:
+                        resume_data["projects"] = resume_data["projects"][:1]
+                        
+                    latex_content = render_resume_to_latex(resume_data, profile=profile)
+                    pdf_path = render_pdf(latex_content)
+
         except Exception as e:
             logger.warning(f"PDF generation failed: {e}")
 
-        # 9. Save records
+        # ── Save Records ──────────────────────────────────────────────
         from app.models.resume_history import ResumeHistory
 
-        score = resume_data.get("ats_score") if isinstance(resume_data, dict) else None
         resume = GeneratedResume(
             id=resume_id,
             job_description=job_description,
             generated_content=json.dumps(resume_data, indent=2),
             generated_latex=latex_content,
             pdf_path=pdf_path,
-            score=float(score) if score else None,
+            score=float(ats_result["score"]),
         )
         self.db.add(resume)
 
@@ -466,50 +334,86 @@ class ResumeGenerationService:
         self.db.add(history)
 
         self.db.commit()
-        logger.info(f"Generated resume {resume_id} (ATS score: {score})")
+        logger.info(f"Generated resume {resume_id} (ATS score: {ats_result['score']}%)")
         return resume
 
+    def _enrich_from_db(self, experiences: list, oss_entries: list, projects: list):
+        """Enrich generated entries with actual DB data (dates, URLs, etc.)."""
+        from app.models.work_entry import WorkEntry
 
-# ---------------------------------------------------------------------------
-# OSS helpers
-# ---------------------------------------------------------------------------
+        # Collect all work_entry_ids
+        all_ids = set()
+        for entries in [experiences, oss_entries]:
+            for entry in entries:
+                eid = entry.get("_work_entry_id")
+                if eid:
+                    all_ids.add(eid)
 
-def _find_matching_oss(oss_entry: dict) -> dict | None:
-    """Find the matching static USER_OSS entry for an LLM-generated OSS entry."""
-    org = (
-        oss_entry.get("org_display") or oss_entry.get("org") or ""
-    ).lower()
-    for static in USER_OSS:
-        if (
-            "learning equality" in org
-            or "kolibri" in org
-            or "learningequality" in org
-        ):
-            return static
-    return None
+        if not all_ids:
+            return
 
+        # Fetch from DB
+        db_entries = self.db.query(WorkEntry).filter(WorkEntry.id.in_(all_ids)).all()
+        db_map = {e.id: e for e in db_entries}
 
-def _validate_contributions(
-    llm_contributions: list[str], real_contributions: list[str]
-) -> list[str]:
-    """Keep only LLM contributions that are close to real ones.
+        # Enrich experiences
+        for exp in experiences:
+            eid = exp.get("_work_entry_id")
+            db_entry = db_map.get(eid)
+            if db_entry:
+                exp["date_range"] = db_entry.date_range or ""
+                if db_entry.role:
+                    exp["title"] = db_entry.role
+                if db_entry.company:
+                    exp["company"] = db_entry.company
 
-    Accepts verbatim copies and near-verbatim paraphrases (>60% word overlap).
-    Returns the canonical real-contribution text for accepted entries.
-    """
-    validated = []
-    for llm_c in llm_contributions:
-        llm_lower = llm_c.lower().strip()
-        for real_c in real_contributions:
-            real_lower = real_c.lower().strip()
-            # Verbatim check — first 40 chars match
-            if llm_lower[:40] == real_lower[:40]:
-                validated.append(real_c)
-                break
-            # Word-overlap check
-            llm_words = set(llm_lower.split())
-            real_words = set(real_lower.split())
-            if len(llm_words & real_words) / max(len(real_words), 1) > 0.6:
-                validated.append(real_c)
-                break
-    return validated
+        # Enrich OSS
+        for oss in oss_entries:
+            eid = oss.get("_work_entry_id")
+            db_entry = db_map.get(eid)
+            if db_entry:
+                oss["duration"] = db_entry.date_range or ""
+                if db_entry.github_url:
+                    # Extract org GitHub URL
+                    oss["org_github"] = db_entry.github_url.replace("https://", "")
+
+        # Enrich projects with github_url from retrieval metadata
+        # (projects don't have _work_entry_id currently, but we can match by title)
+
+    def _inject_missing_keywords(self, resume_data: dict, missing_keywords: list[str]):
+        """Attempt to inject missing ATS keywords into the skills section.
+
+        Only adds keywords that are plausibly related to existing skills.
+        """
+        skills = resume_data.get("skills", {})
+        if not isinstance(skills, dict):
+            return
+
+        # Try to categorize and add missing keywords
+        for kw in missing_keywords[:3]:
+            kw_lower = kw.lower()
+
+            # Check if it's already in any skills category
+            already_present = False
+            for cat_skills in skills.values():
+                if isinstance(cat_skills, list) and any(kw_lower == s.lower() for s in cat_skills):
+                    already_present = True
+                    break
+
+            if already_present:
+                continue
+
+            # Simple heuristic categorization
+            if any(lang in kw_lower for lang in ["python", "java", "go", "rust", "typescript", "javascript", "c++", "ruby", "swift", "kotlin"]):
+                skills.setdefault("languages", []).append(kw)
+            elif any(fw in kw_lower for fw in ["react", "vue", "angular", "django", "flask", "fastapi", "spring", "express", "next", "node"]):
+                skills.setdefault("backend", []).append(kw)
+            elif any(db in kw_lower for db in ["postgres", "mysql", "mongo", "redis", "elastic", "dynamo", "sqlite", "cassandra"]):
+                skills.setdefault("databases", []).append(kw)
+            elif any(infra in kw_lower for infra in ["docker", "kubernetes", "aws", "gcp", "azure", "terraform", "jenkins", "ci/cd", "github actions"]):
+                skills.setdefault("infra", []).append(kw)
+            else:
+                # Default to tools or concepts
+                skills.setdefault("tools", []).append(kw)
+
+        resume_data["skills"] = skills

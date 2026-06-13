@@ -5,6 +5,7 @@ import ResumePreview from '../components/ResumePreview';
 export default function GenerateResume() {
   const [jd, setJd] = useState('');
   const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState('');
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [error, setError] = useState(null);
@@ -20,21 +21,53 @@ export default function GenerateResume() {
     }
 
     setLoading(true);
+    setStage('parsing_jd');
     setError(null);
     setResult(null);
 
+    // Simulate progress stages since the backend is synchronous
+    // In a real implementation with SSE, the backend would stream these updates
+    const stages = [
+      { id: 'parsing_jd', text: 'Parsing JD & Extracting Keywords...', time: 0 },
+      { id: 'skill_bridge', text: 'Analyzing Skill Gaps...', time: 3000 },
+      { id: 'retrieval', text: 'Retrieving Relevant Experience...', time: 6000 },
+      { id: 'bullet_gen', text: 'Generating Tailored Bullets...', time: 9000 },
+      { id: 'ats_verify', text: 'Verifying ATS Compatibility...', time: 20000 },
+      { id: 'pdf_render', text: 'Compiling LaTeX PDF...', time: 23000 },
+    ];
+    
+    const timers = stages.map(s => setTimeout(() => setStage(s.id), s.time));
+
     try {
       const res = await api.post('/resumes/generate', { job_description: jd });
+      
+      // Clear timers since we finished
+      timers.forEach(clearTimeout);
+      setStage('complete');
+      
       setResult(res.data);
       // Refresh history
       const histRes = await api.get('/resumes');
       setHistory(histRes.data);
     } catch (err) {
+      timers.forEach(clearTimeout);
       setError(err.response?.data?.detail || 'Generation failed. Make sure you have an active chat and embedding provider.');
     } finally {
       setLoading(false);
     }
   };
+
+  const currentStageText = (() => {
+    switch (stage) {
+      case 'parsing_jd': return 'Parsing job description and extracting keywords...';
+      case 'skill_bridge': return 'Analyzing skill gaps and framing...';
+      case 'retrieval': return 'Retrieving typed experience (Work/Project/OSS)...';
+      case 'bullet_gen': return 'Generating tailored achievement bullets...';
+      case 'ats_verify': return 'Scoring against ATS keywords...';
+      case 'pdf_render': return 'Compiling LaTeX into PDF...';
+      default: return 'Generating resume...';
+    }
+  })();
 
   return (
     <div className="animate-fade-in-up">
@@ -68,7 +101,7 @@ export default function GenerateResume() {
               {loading ? (
                 <>
                   <span className="spinner" />
-                  Generating... This may take a moment
+                  Generating...
                 </>
               ) : (
                 '✦ Generate Resume'
@@ -91,7 +124,9 @@ export default function GenerateResume() {
                         {r.job_description_preview.substring(0, 80)}...
                       </div>
                       <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                        {r.score && <span className="badge badge-violet">ATS: {r.score}</span>}
+                        {r.score && <span className={`badge ${r.score >= 80 ? 'badge-emerald' : r.score >= 60 ? 'badge-yellow' : 'badge-red'}`}>
+                          ATS: {r.score}%
+                        </span>}
                         {r.has_pdf && <span className="badge badge-emerald">PDF</span>}
                       </div>
                     </div>
@@ -113,14 +148,45 @@ export default function GenerateResume() {
           {loading && (
             <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
               <span className="spinner" style={{ width: '40px', height: '40px', margin: '0 auto 1rem' }} />
-              <div style={{ color: 'var(--color-text-secondary)', fontSize: '0.9375rem' }}>
-                Analyzing JD, retrieving relevant experience, generating resume...
+              <div style={{ color: 'var(--color-text-primary)', fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+                Pipeline Active
+              </div>
+              <div style={{ color: 'var(--color-accent-violet)', fontSize: '0.9375rem', fontFamily: 'monospace' }}>
+                > {currentStageText}
               </div>
             </div>
           )}
           {result && !loading && (
             <>
-              <ResumePreview content={result.generated_content} />
+              {/* ATS Score Banner */}
+              <div className="glass-panel" style={{ padding: '1rem', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--color-text-secondary)', marginBottom: '0.25rem' }}>
+                    ATS Match Score
+                  </div>
+                  <div style={{ 
+                    fontSize: '1.5rem', 
+                    fontWeight: 800,
+                    color: result.score >= 80 ? 'var(--color-success)' : result.score >= 60 ? 'var(--color-warning)' : 'var(--color-danger)'
+                  }}>
+                    {result.score}%
+                  </div>
+                </div>
+                
+                {result.generated_content && (
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <span className="badge badge-emerald">
+                      {JSON.parse(result.generated_content).ats_matched?.length || 0} Matched
+                    </span>
+                    <span className="badge badge-red">
+                      {JSON.parse(result.generated_content).ats_missing?.length || 0} Missing
+                    </span>
+                  </div>
+                )}
+              </div>
+              
+              <ResumePreview content={result.generated_content} resumeId={result.id} />
+              
               {result.pdf_path && (
                 <div style={{ marginTop: '1rem' }}>
                   <a href={`/api/resumes/${result.id}/pdf`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
@@ -136,7 +202,7 @@ export default function GenerateResume() {
             <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
               <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem', opacity: 0.3 }}>✦</div>
               <div style={{ color: 'var(--color-text-muted)', fontSize: '0.9375rem' }}>
-                Enter a job description and click Generate to create a tailored resume
+                Enter a job description and click Generate to run the multi-stage pipeline
               </div>
             </div>
           )}

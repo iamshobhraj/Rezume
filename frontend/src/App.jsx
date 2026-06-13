@@ -3,6 +3,7 @@ import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Profile from './pages/Profile';
 import Projects from './pages/Projects';
+import Skills from './pages/Skills';
 import GenerateResume from './pages/GenerateResume';
 import History from './pages/History';
 import ResumeConfig from './pages/ResumeConfig';
@@ -17,6 +18,7 @@ export default function App() {
           <Route path="/profile" element={<Profile />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/entries" element={<Navigate to="/projects" replace />} />
+          <Route path="/skills" element={<Skills />} />
           <Route path="/generate" element={<GenerateResume />} />
           <Route path="/history" element={<History />} />
           <Route path="/config" element={<ResumeConfig />} />

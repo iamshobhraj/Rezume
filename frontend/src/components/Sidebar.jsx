@@ -4,6 +4,7 @@ const navItems = [
   { to: '/', label: 'Dashboard', icon: '◈' },
   { to: '/profile', label: 'User Profile', icon: '👤' },
   { to: '/projects', label: 'Projects & OSS', icon: '◉' },
+  { to: '/skills', label: 'Skills Inventory', icon: '⚡' },
   { to: '/generate', label: 'Generate Resume', icon: '✦' },
   { to: '/history', label: 'Resume History', icon: '◷' },
   { to: '/config', label: 'Resume Config', icon: '⚙' },

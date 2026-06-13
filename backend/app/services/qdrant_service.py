@@ -133,6 +133,60 @@ class QdrantService:
                 score_threshold=score_threshold,
             ).points
 
+    def search_filtered(
+        self,
+        query_vector: list[float],
+        top_k: int = 10,
+        entry_type: str = None,
+        score_threshold: float = 0.45,
+        sparse_indices: list[int] = None,
+        sparse_values: list[float] = None,
+    ) -> list:
+        """Search for similar vectors with payload filtering by entry_type.
+
+        Uses hybrid search if sparse vector is provided, otherwise dense-only.
+        """
+        from qdrant_client.models import FieldCondition, MatchValue
+
+        # Build filter
+        must_conditions = []
+        if entry_type:
+            must_conditions.append(
+                FieldCondition(key="entry_type", match=MatchValue(value=entry_type))
+            )
+        query_filter = Filter(must=must_conditions) if must_conditions else None
+
+        if sparse_indices is not None and sparse_values is not None:
+            return self.client.query_points(
+                collection_name=self.COLLECTION_NAME,
+                prefetch=[
+                    Prefetch(
+                        query=query_vector,
+                        using="dense",
+                        limit=top_k,
+                        filter=query_filter,
+                    ),
+                    Prefetch(
+                        query=SparseVector(indices=sparse_indices, values=sparse_values),
+                        using="sparse",
+                        limit=top_k,
+                        filter=query_filter,
+                    )
+                ],
+                query=FusionQuery(fusion=Fusion.RRF),
+                limit=top_k,
+                filter=query_filter,
+            ).points
+        else:
+            return self.client.query_points(
+                collection_name=self.COLLECTION_NAME,
+                query=query_vector,
+                using="dense",
+                limit=top_k,
+                score_threshold=score_threshold,
+                filter=query_filter,
+            ).points
+
     def delete_points(self, point_ids: list[str]) -> None:
         """Delete specific points from the collection."""
         if not point_ids:
